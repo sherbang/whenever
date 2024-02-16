@@ -11,10 +11,12 @@ from pytest import approx
 
 from whenever import (
     AwareDateTime,
+    Duration,
     InvalidFormat,
     LocalDateTime,
     NaiveDateTime,
     OffsetDateTime,
+    Period,
     UTCDateTime,
     ZonedDateTime,
     hours,
@@ -40,7 +42,7 @@ class TestInit:
         assert d.minute == 12
         assert d.second == 30
         assert d.microsecond == 450
-        assert d.offset == timedelta()
+        assert d.offset == Duration.ZERO
 
     def test_optionality(self):
         assert (
@@ -321,25 +323,27 @@ class TestComparison:
 
 def test_py():
     d = UTCDateTime(2020, 8, 15, 23, 12, 9, 987_654)
-    assert d.py() == py_datetime(
+    assert d.py_datetime() == py_datetime(
         2020, 8, 15, 23, 12, 9, 987_654, tzinfo=timezone.utc
     )
 
 
-def test_from_py():
+def test_from_py_datetime():
     d = py_datetime(2020, 8, 15, 23, 12, 9, 987_654, tzinfo=timezone.utc)
-    assert UTCDateTime.from_py(d) == UTCDateTime(
+    assert UTCDateTime.from_py_datetime(d) == UTCDateTime(
         2020, 8, 15, 23, 12, 9, 987_654
     )
 
     with pytest.raises(ValueError, match="UTC.*timedelta"):
-        UTCDateTime.from_py(d.replace(tzinfo=timezone(-timedelta(hours=4))))
+        UTCDateTime.from_py_datetime(
+            d.replace(tzinfo=timezone(-timedelta(hours=4)))
+        )
 
 
 def test_now():
     now = UTCDateTime.now()
     py_now = py_datetime.now(timezone.utc)
-    assert py_now - now.py() < timedelta(seconds=1)
+    assert py_now - now.py_datetime() < timedelta(seconds=1)
 
 
 @freeze_time("2020-08-15T23:12:09Z")
@@ -373,9 +377,9 @@ def test_replace():
 
 
 class TestAdd:
-    def test_timedelta(self):
+    def test_exact_duration(self):
         d = UTCDateTime(2020, 8, 15, 23, 12, 9, 987_654)
-        assert d + timedelta(days=1, seconds=5) == UTCDateTime(
+        assert d + Duration(hours=24, seconds=5) == UTCDateTime(
             2020, 8, 16, 23, 12, 14, 987_654
         )
 
@@ -384,53 +388,65 @@ class TestAdd:
         with pytest.raises(TypeError, match="unsupported operand type"):
             d + 42  # type: ignore[operator]
 
+    def test_period(self):
+        d = UTCDateTime(2020, 8, 15, 23, 30)
+        assert d + Period(years=1, days=4, minutes=-4) == UTCDateTime(
+            2021, 8, 19, 23, 26
+        )
+
 
 class TestSubtract:
-    def test_timedelta(self):
+    def test_duration(self):
         d = UTCDateTime(2020, 8, 15, 23, 12, 9, 987_654)
-        assert d - timedelta(days=1, seconds=5) == UTCDateTime(
+        assert d - Duration(hours=24, seconds=5) == UTCDateTime(
             2020, 8, 14, 23, 12, 4, 987_654
+        )
+
+    def test_period(self):
+        d = UTCDateTime(2020, 8, 15, 23, 30)
+        assert d - Period(years=1, days=4, minutes=-4) == UTCDateTime(
+            2019, 8, 11, 23, 34
         )
 
     def test_utc(self):
         d = UTCDateTime(2020, 8, 15, 23, 12, 9, 987_654)
         other = UTCDateTime(2020, 8, 14, 23, 12, 4, 987_654)
-        assert d - other == timedelta(days=1, seconds=5)
+        assert d - other == Duration(hours=24, seconds=5)
 
     def test_offset(self):
         d = UTCDateTime(2020, 8, 15, 23)
         assert d - OffsetDateTime(
             2020, 8, 15, 20, offset=hours(2)
-        ) == timedelta(hours=5)
+        ) == Duration(hours=5)
 
     def test_zoned(self):
         d = UTCDateTime(2023, 10, 29, 6)
         assert d - ZonedDateTime(
             2023, 10, 29, 3, tz="Europe/Paris", disambiguate="later"
-        ) == timedelta(hours=4)
+        ) == Duration(hours=4)
         assert d - ZonedDateTime(
             2023, 10, 29, 2, tz="Europe/Paris", disambiguate="later"
-        ) == timedelta(hours=5)
+        ) == Duration(hours=5)
         assert d - ZonedDateTime(
             2023, 10, 29, 2, tz="Europe/Paris", disambiguate="earlier"
-        ) == timedelta(hours=6)
+        ) == Duration(hours=6)
         assert d - ZonedDateTime(
             2023, 10, 29, 1, tz="Europe/Paris"
-        ) == timedelta(hours=7)
+        ) == Duration(hours=7)
 
     @local_ams_tz()
     def test_local(self):
         d = UTCDateTime(2023, 10, 29, 6)
         assert d - LocalDateTime(
             2023, 10, 29, 3, disambiguate="later"
-        ) == timedelta(hours=4)
+        ) == Duration(hours=4)
         assert d - LocalDateTime(
             2023, 10, 29, 2, disambiguate="later"
-        ) == timedelta(hours=5)
+        ) == Duration(hours=5)
         assert d - LocalDateTime(
             2023, 10, 29, 2, disambiguate="earlier"
-        ) == timedelta(hours=6)
-        assert d - LocalDateTime(2023, 10, 29, 1) == timedelta(hours=7)
+        ) == Duration(hours=6)
+        assert d - LocalDateTime(2023, 10, 29, 1) == Duration(hours=7)
 
     def test_invalid(self):
         d = UTCDateTime(2020, 8, 15, 23, 12, 9, 987_654)
@@ -441,7 +457,7 @@ class TestSubtract:
 def test_pickle():
     d = UTCDateTime(2020, 8, 15, 23, 12, 9, 987_654)
     dumped = pickle.dumps(d)
-    assert len(dumped) <= len(pickle.dumps(d.py))
+    assert len(dumped) <= len(pickle.dumps(d.py_datetime))
     assert pickle.loads(pickle.dumps(d)) == d
 
 
@@ -469,10 +485,10 @@ def test_to_utc():
 def test_to_offset():
     d = UTCDateTime(2020, 8, 15, 20)
     assert d.as_offset().exact_eq(
-        OffsetDateTime(2020, 8, 15, 20, offset=timedelta())
+        OffsetDateTime(2020, 8, 15, 20, offset=hours(0))
     )
     assert d.as_offset(hours(3)).exact_eq(
-        OffsetDateTime(2020, 8, 15, 23, offset=timedelta(hours=3))
+        OffsetDateTime(2020, 8, 15, 23, offset=hours(3))
     )
 
 

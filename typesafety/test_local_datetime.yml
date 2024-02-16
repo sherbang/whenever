@@ -7,19 +7,17 @@
 - case: addition
   regex: true
   main: |
-    from datetime import timedelta
-    from whenever import LocalDateTime
+    from whenever import LocalDateTime, Duration
     d = LocalDateTime(2020, 8, 9)
-    reveal_type(d + timedelta(4))  # N: .*whenever.LocalDateTime
+    reveal_type(d + Duration(seconds=4))  # N: .*whenever.LocalDateTime
     d + 12  # E: .*Unsupported
 - case: subtraction
   regex: true
   main: |
-    from datetime import timedelta
-    from whenever import LocalDateTime
+    from whenever import LocalDateTime, Duration
     d = LocalDateTime(2020, 8, 9)
-    reveal_type(d - timedelta(4))  # N: .*type is "whenever.LocalDateTime"
-    reveal_type(d - d)  # N: .*type is "datetime.timedelta
+    reveal_type(d - Duration(hours=4))  # N: .*type is "whenever.LocalDateTime"
+    reveal_type(d - d)  # N: .*type is "whenever.Duration
 - case: replace
   regex: true
   main: |

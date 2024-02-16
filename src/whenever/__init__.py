@@ -37,9 +37,11 @@ __version__ = "0.4.0rc0"
 import re
 import sys
 from abc import ABC, abstractmethod
+from calendar import monthrange
 from datetime import (
+    date as _date,
     datetime as _datetime,
-    timedelta,
+    timedelta as _timedelta,
     timezone as _timezone,
     tzinfo as _tzinfo,
 )
@@ -68,6 +70,7 @@ except ImportError:  # pragma: no cover
     )
 
 __all__ = [
+    "Date",
     "DateTime",
     "AwareDateTime",
     "UTCDateTime",
@@ -75,7 +78,8 @@ __all__ = [
     "ZonedDateTime",
     "LocalDateTime",
     "NaiveDateTime",
-    "days",
+    "Duration",
+    "Period",
     "hours",
     "minutes",
     "DoesntExistInZone",
@@ -85,11 +89,943 @@ __all__ = [
 ]
 
 
+MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY, SUNDAY = range(1, 8)
+
+
 class NOT_SET:
     pass  # sentinel for when no value is passed
 
 
-_T = TypeVar("_T", bound="DateTime")
+class Date:
+    """A date without a time component
+
+    Example
+    -------
+
+    >>> d = Date(2021, 1, 2)
+    Date(2021-01-02)
+
+    """
+
+    __slots__ = ("_py_date",)
+
+    def __init__(self, year: int, month: int, day: int) -> None:
+        self._py_date = _date(year, month, day)
+
+    @property
+    def year(self) -> int:
+        return self._py_date.year
+
+    @property
+    def month(self) -> int:
+        return self._py_date.month
+
+    @property
+    def day(self) -> int:
+        return self._py_date.day
+
+    def canonical_format(self) -> str:
+        """The date in canonical format.
+
+        Example
+        -------
+
+        >>> d = Date(2021, 1, 2)
+        >>> d.canonical_format()
+        '2021-01-02'
+
+        """
+        return self._py_date.isoformat()
+
+    __str__ = canonical_format
+
+    def __repr__(self) -> str:
+        return f"Date({self})"
+
+    if not TYPE_CHECKING:  # pragma: no branch
+
+        def __eq__(self, other: object) -> bool:
+            """Compare for equality
+
+            Example
+            -------
+
+            >>> d = Date(2021, 1, 2)
+            >>> d == Date(2021, 1, 2)
+            True
+            >>> d == Date(2021, 1, 3)
+            False
+
+            """
+            if not isinstance(other, Date):
+                return NotImplemented
+            return self._py_date == other._py_date
+
+        __hash__ = property(attrgetter("_py_date.__hash__"))
+
+    @classmethod
+    def from_py_date(cls, d: _date, /) -> Date:
+        """Create from a :class:`~datetime.date`
+
+        Example
+        -------
+
+        >>> Date.from_py_date(date(2021, 1, 2))
+        Date(2021-01-02)
+
+        """
+        self = _object_new(cls)
+        self._py_date = d
+        return self
+
+    def add(
+        self, years: int = 0, months: int = 0, weeks: int = 0, days: int = 0
+    ) -> Date:
+        """Add a components to a date.
+
+        Components are added in the order of years, months, weeks, and days.
+
+        Example
+        -------
+
+        >>> d = Date(2021, 1, 2)
+        >>> d.add(years=1, months=2, days=3)
+        Date(2022-03-05)
+
+        >>> Date(2020, 2, 29).add(years=1)
+        Date(2021-02-28)
+
+        """
+        year_overflow, month_new = divmod(self.month - 1 + months, 12)
+        month_new += 1
+        year_new = self.year + years + year_overflow
+        day_new = min(self.day, monthrange(year_new, month_new)[1])
+        return Date.from_py_date(
+            _date(year_new, month_new, day_new) + _timedelta(days, weeks=weeks)
+        )
+
+    def day_of_week(self) -> int:
+        """The day of the week, where 1 is Monday and 7 is Sunday
+
+        Warning
+        -------
+        This method uses the ISO definition of the week, in contrast to
+        the :meth:`~datetime.date.weekday` method.
+
+        Example
+        -------
+
+        >>> from whenever import SATURDAY
+        >>> Date(2021, 1, 2).day_of_week()
+        6
+        >>> Date(2021, 1, 2).day_of_week() == SATURDAY
+        True
+
+        """
+        return self._py_date.isoweekday()
+
+
+class Duration:
+    """A duration consisting of a fixed time: hours, minutes, (micro)seconds
+
+    The inputs are normalized, so 90 minutes becomes 1 hour and 30 minutes,
+    for example.
+
+    Examples
+    --------
+
+    >>> d = Duration(hours=1, minutes=30)
+    Duration(01:30:00)
+    >>> d.in_minutes()
+    90.0
+
+    """
+
+    __slots__ = ("_total_ms",)
+
+    def __init__(
+        self,
+        *,
+        hours: float = 0,
+        minutes: float = 0,
+        seconds: float = 0,
+        microseconds: int = 0,
+    ) -> None:
+        assert type(microseconds) is int  # catch this common mistake
+        self._total_ms = (
+            # Cast individual components to int to avoid floating point errors
+            int(hours * 3_600_000_000)
+            + int(minutes * 60_000_000)
+            + int(seconds * 1_000_000)
+            + microseconds
+        )
+
+    ZERO: ClassVar[Duration]
+    """A duration of zero"""
+
+    def in_hours(self) -> float:
+        """The total duration in hours
+
+        Example
+        -------
+
+        >>> d = Duration(hours=1, minutes=30)
+        >>> d.in_hours()
+        1.5
+
+        """
+        return self._total_ms / 3_600_000_000
+
+    def in_minutes(self) -> float:
+        """The total duration in minutes
+
+        Example
+        -------
+
+        >>> d = Duration(hours=1, minutes=30, seconds=30)
+        >>> d.in_minutes()
+        90.5
+
+        """
+        return self._total_ms / 60_000_000
+
+    def in_seconds(self) -> float:
+        """The total duration in seconds
+
+        Example
+        -------
+
+        >>> d = Duration(minutes=2, seconds=1, microseconds=500_000)
+        >>> d.in_seconds()
+        121.5
+
+        """
+        return self._total_ms / 1_000_000
+
+    def in_microseconds(self) -> int:
+        """The total duration in microseconds
+
+        >>> d = Duration(seconds=2, microseconds=50)
+        >>> d.in_microseconds()
+        2_000_050
+
+        """
+        return self._total_ms
+
+    def __eq__(self, other: object) -> bool:
+        """Compare for equality
+
+        Example
+        -------
+
+        >>> d = Duration(hours=1, minutes=30)
+        >>> d == Duration(minutes=90)
+        True
+        >>> d == Duration(hours=2)
+        False
+
+        """
+        if not isinstance(other, Duration):
+            return NotImplemented
+        return self._total_ms == other._total_ms
+
+    def __hash__(self) -> int:
+        return hash(self._total_ms)
+
+    def __lt__(self, other: Duration) -> bool:
+        if not isinstance(other, Duration):
+            return NotImplemented
+        return self._total_ms < other._total_ms
+
+    def __le__(self, other: Duration) -> bool:
+        if not isinstance(other, Duration):
+            return NotImplemented
+        return self._total_ms <= other._total_ms
+
+    def __gt__(self, other: Duration) -> bool:
+        if not isinstance(other, Duration):
+            return NotImplemented
+        return self._total_ms > other._total_ms
+
+    def __ge__(self, other: Duration) -> bool:
+        if not isinstance(other, Duration):
+            return NotImplemented
+        return self._total_ms >= other._total_ms
+
+    def __bool__(self) -> bool:
+        """True if the duration is non-zero
+
+        Example
+        -------
+
+        >>> bool(Duration())
+        False
+        >>> bool(Duration(minutes=1))
+        True
+
+        """
+        return bool(self._total_ms)
+
+    def __add__(self, other: Duration) -> Duration:
+        """Add two durations together
+
+        Example
+        -------
+
+        >>> d = Duration(hours=1, minutes=30)
+        >>> d + Duration(minutes=30)
+        Duration(02:00:00)
+
+        """
+        if not isinstance(other, Duration):
+            return NotImplemented
+        return Duration(microseconds=self._total_ms + other._total_ms)
+
+    def __sub__(self, other: Duration) -> Duration:
+        """Subtract two durations
+
+        Example
+        -------
+
+        >>> d = Duration(hours=1, minutes=30)
+        >>> d - Duration(minutes=30)
+        Duration(01:00:00)
+
+        """
+        if not isinstance(other, Duration):
+            return NotImplemented
+        return Duration(microseconds=self._total_ms - other._total_ms)
+
+    def __mul__(self, other: float) -> Duration:
+        """Multiply by a number
+
+        Example
+        -------
+
+        >>> d = Duration(hours=1, minutes=30)
+        >>> d * 2.5
+        Duration(03:45:00)
+
+        """
+        if not isinstance(other, (int, float)):
+            return NotImplemented
+        return Duration(microseconds=int(self._total_ms * other))
+
+    def __neg__(self) -> Duration:
+        """Negate the duration
+
+        Example
+        -------
+
+        >>> d = Duration(hours=1, minutes=30)
+        >>> -d
+        Duration(-01:30:00)
+
+        """
+        return Duration(microseconds=-self._total_ms)
+
+    @overload
+    def __truediv__(self, other: float) -> Duration: ...
+
+    @overload
+    def __truediv__(self, other: Duration) -> float: ...
+
+    def __truediv__(self, other: float | Duration) -> Duration | float:
+        """Divide by a number or another duration
+
+        Example
+        -------
+
+        >>> d = Duration(hours=1, minutes=30)
+        >>> d / 2
+        Duration(00:45:00)
+        >>> d / Duration(minutes=30)
+        3.0
+
+        """
+        if isinstance(other, Duration):
+            return self._total_ms / other._total_ms
+        elif isinstance(other, (int, float)):
+            return Duration(microseconds=int(self._total_ms / other))
+        return NotImplemented
+
+    def __abs__(self) -> Duration:
+        """The absolute value of the duration
+
+        Example
+        -------
+
+        >>> d = Duration(hours=-1, minutes=-30)
+        >>> abs(d)
+        Duration(01:30:00)
+
+        """
+        return Duration(microseconds=abs(self._total_ms))
+
+    def canonical_format(self) -> str:
+        """The duration in canonical format.
+
+        The format is:
+
+        .. code-block:: text
+
+           HH:MM:SS(.ffffff)
+
+        For example:
+
+        .. code-block:: text
+
+           01:24:45.0089
+
+        """
+        hrs, mins, secs, ms = abs(self).as_tuple()
+        return (
+            f"{'-'*(self._total_ms < 0)}{hrs:02}:{mins:02}:{secs:02}"
+            + f".{ms:0>6}" * bool(ms)
+        )
+
+    @classmethod
+    def from_canonical_format(cls, s: str, /) -> Duration:
+        """Create from a canonical string representation.
+
+        Inverse of :meth:`canonical_format`
+
+        Example
+        -------
+
+        >>> Duration.from_canonical_format("01:30:00")
+        Duration(01:30:00)
+
+        Raises
+        ------
+        InvalidFormat
+            If the string does not match this exact format.
+
+        """
+        if not (match := _match_duration(s)):
+            raise InvalidFormat()
+        sign, hours, mins, secs = match.groups()
+        return cls(
+            microseconds=(-1 if sign == "-" else 1)
+            * (
+                int(hours) * 3_600_000_000
+                + int(mins) * 60_000_000
+                + round(float(secs) * 1_000_000)
+            )
+        )
+
+    __str__ = canonical_format
+
+    def py_timedelta(self) -> _timedelta:
+        """Convert to a :class:`~datetime.timedelta`
+
+        Inverse of :meth:`from_py_timedelta`
+
+        Example
+        -------
+
+        >>> d = Duration(hours=1, minutes=30)
+        >>> d.py_timedelta()
+        timedelta(seconds=5400)
+
+        """
+        return _timedelta(microseconds=self._total_ms)
+
+    @classmethod
+    def from_py_timedelta(cls, td: _timedelta, /) -> Duration:
+        """Create from a :class:`~datetime.timedelta`
+
+        Inverse of :meth:`py_timedelta`
+
+        Example
+        -------
+
+        >>> Duration.from_py_timedelta(timedelta(seconds=5400))
+        Duration(01:30:00)
+
+        """
+        return Duration(
+            microseconds=td.microseconds,
+            seconds=td.seconds,
+            hours=td.days * 24,
+        )
+
+    def as_period(self) -> Period:
+        """Convert to a :class:`Period`
+
+        Example
+        -------
+
+        >>> d = Duration(minutes=90)
+        >>> d.as_period()
+        Period(PT1H30M)
+
+        """
+        h, m, s, ms = self.as_tuple()
+        return Period(hours=h, minutes=m, seconds=s, microseconds=ms)
+
+    def as_tuple(self) -> tuple[int, int, int, int]:
+        """Convert to a tuple of (hours, minutes, seconds, microseconds)
+
+        Example
+        -------
+
+        >>> d = Duration(hours=1, minutes=30, microseconds=5_000_090)
+        >>> d.as_tuple()
+        (1, 30, 5, 90)
+
+        """
+        hours, rem = divmod(abs(self._total_ms), 3_600_000_000)
+        mins, rem = divmod(rem, 60_000_000)
+        secs, ms = divmod(rem, 1_000_000)
+        return (
+            (hours, mins, secs, ms)
+            if self._total_ms >= 0
+            else (-hours, -mins, -secs, -ms)
+        )
+
+    def __repr__(self) -> str:
+        return f"Duration({self})"
+
+
+Duration.ZERO = Duration()
+
+
+class Period:
+    """A period of time, consisting of years, months, weeks, days, hours,
+    minutes, seconds and microseconds.
+
+    The canonical string format is:
+
+    .. code-block:: text
+
+        PnYnMnWnDTnHnMn(.ffffff)S
+
+    For example:
+
+    .. code-block:: text
+
+        P1DT5H30M
+        PT3H
+        P2M
+        P1Y2M-3W4DT5H6M7.0089S
+
+    Note
+    ----
+    Aside from milliseconds, the fields are not normalized.
+    For example, "90 minutes" is not converted to "1 hour and 30 minutes".
+
+    """
+
+    __slots__ = (
+        "_years",
+        "_months",
+        "_weeks",
+        "_days",
+        "_hours",
+        "_minutes",
+        "_seconds",
+        "_microseconds",
+    )
+
+    ZERO: ClassVar[Period]
+    """A period of zero"""
+
+    def __init__(
+        self,
+        *,
+        years: int = 0,
+        months: int = 0,
+        weeks: int = 0,
+        days: int = 0,
+        hours: int = 0,
+        minutes: int = 0,
+        seconds: int = 0,
+        microseconds: int = 0,
+    ) -> None:
+        self._years = years
+        self._months = months
+        self._weeks = weeks
+        self._days = days
+        self._hours = hours
+        self._minutes = minutes
+        seconds_extra, self._microseconds = divmod(microseconds, 1_000_000)
+        self._seconds = seconds + seconds_extra
+
+    @property
+    def years(self) -> int:
+        return self._years
+
+    @property
+    def months(self) -> int:
+        return self._months
+
+    @property
+    def weeks(self) -> int:
+        return self._weeks
+
+    @property
+    def days(self) -> int:
+        return self._days
+
+    @property
+    def hours(self) -> int:
+        return self._hours
+
+    @property
+    def minutes(self) -> int:
+        return self._minutes
+
+    @property
+    def seconds(self) -> int:
+        return self._seconds
+
+    @property
+    def microseconds(self) -> int:
+        return self._microseconds
+
+    def __eq__(self, other: object) -> bool:
+        """Compare for equality of all fields
+
+        Note
+        ----
+        Periods are equal if they have the same values for all fields.
+        No normalization is done, so "one minute" is not equal to "60 seconds".
+
+        Example
+        -------
+
+        >>> p = Period(hours=1, minutes=30)
+        >>> p == Period(days=0, hours=1, minutes=30)
+        True
+        >>> # same duration, but different field values
+        >>> p == Period(minutes=90)
+        False
+        """
+        if not isinstance(other, Period):
+            return NotImplemented
+        return (
+            self._years == other._years
+            and self._months == other._months
+            and self._weeks == other._weeks
+            and self._days == other._days
+            and self._hours == other._hours
+            and self._minutes == other._minutes
+            and self._seconds == other._seconds
+            and self._microseconds == other._microseconds
+        )
+
+    def __hash__(self) -> int:
+        return hash(
+            (
+                self._years,
+                self._months,
+                self._weeks,
+                self._days,
+                self._hours,
+                self._minutes,
+                self._seconds,
+                self._microseconds,
+            )
+        )
+
+    def __bool__(self) -> bool:
+        """True if any field is non-zero
+
+        Example
+        -------
+
+        >>> bool(Period())
+        False
+        >>> bool(Period(hours=-1))
+        True
+
+        """
+        return bool(
+            self._years
+            or self._months
+            or self._weeks
+            or self._days
+            or self._hours
+            or self._minutes
+            or self._seconds
+            or self._microseconds
+        )
+
+    def canonical_format(self) -> str:
+        """The period in canonical format.
+
+        Example
+        -------
+
+        >>> p = Period(hours=1, minutes=30)
+        >>> p.canonical_format()
+        'PT1H30M'
+
+        """
+        if self._microseconds:
+            seconds = (
+                f"{self._seconds + self._microseconds / 1_000_000:f}".rstrip(
+                    "0"
+                )
+            )
+        else:
+            seconds = str(self._seconds)
+        date = (
+            f"{self._years}Y" * bool(self._years),
+            f"{self._months}M" * bool(self._months),
+            f"{self._weeks}W" * bool(self._weeks),
+            f"{self._days}D" * bool(self._days),
+        )
+        time = (
+            f"{self._hours}H" * bool(self._hours),
+            f"{self._minutes}M" * bool(self._minutes),
+            f"{seconds}S" * bool(self._seconds or self._microseconds),
+        )
+        return "P" + (
+            "".join((*date, "T" if any(time) else "", *time)) or "0D"
+        )
+
+    @classmethod
+    def from_canonical_format(cls, s: str, /) -> Period:
+        """Create from a canonical string representation.
+
+        Inverse of :meth:`canonical_format`
+
+        Example
+        -------
+
+        >>> Period.from_canonical_format("P1Y2M-3W4DT5H6M7.0089S")
+        Period(P1Y2M-3W4DT5H6M7.0089S)
+
+        Raises
+        ------
+        InvalidFormat
+            If the string does not match this exact format.
+
+        """
+        if not (match := _match_period(s)) or s == "P":
+            raise InvalidFormat()
+        years, months, weeks, days, hours, minutes, seconds = match.groups()
+        return cls(
+            years=int(years or 0),
+            months=int(months or 0),
+            weeks=int(weeks or 0),
+            days=int(days or 0),
+            hours=int(hours or 0),
+            minutes=int(minutes or 0),
+            microseconds=int(float(seconds or "0") * 1_000_000),
+        )
+
+    __str__ = canonical_format
+
+    if TYPE_CHECKING:
+
+        def replace(
+            self,
+            *,
+            years: int | NOT_SET = NOT_SET(),
+            months: int | NOT_SET = NOT_SET(),
+            weeks: int | NOT_SET = NOT_SET(),
+            days: int | NOT_SET = NOT_SET(),
+            hours: int | NOT_SET = NOT_SET(),
+            minutes: int | NOT_SET = NOT_SET(),
+            seconds: int | NOT_SET = NOT_SET(),
+            microseconds: int | NOT_SET = NOT_SET(),
+        ) -> Period: ...
+
+    else:
+
+        def replace(self, **kwargs) -> Period:
+            """Create a new instance with the given fields replaced.
+
+            Example
+            -------
+
+            >>> p = Period(years=1, months=2)
+            >>> p.replace(years=2)
+            Period(P2Y2M)
+
+            """
+            return Period(
+                years=kwargs.get("years", self._years),
+                months=kwargs.get("months", self._months),
+                weeks=kwargs.get("weeks", self._weeks),
+                days=kwargs.get("days", self._days),
+                hours=kwargs.get("hours", self._hours),
+                minutes=kwargs.get("minutes", self._minutes),
+                seconds=kwargs.get("seconds", self._seconds),
+                microseconds=kwargs.get("microseconds", self._microseconds),
+            )
+
+    def __repr__(self) -> str:
+        return f"Period({self})"
+
+    def __neg__(self) -> Period:
+        """Negate each field of the period
+
+        Example
+        -------
+
+        >>> p = Period(weeks=2, days=-3, hours=10)
+        >>> -p
+        Period(P-2W3DT-10H)
+
+        """
+        return Period(
+            years=-self._years,
+            months=-self._months,
+            weeks=-self._weeks,
+            days=-self._days,
+            hours=-self._hours,
+            minutes=-self._minutes,
+            seconds=-self._seconds,
+            microseconds=-self._microseconds,
+        )
+
+    def __mul__(self, other: int) -> Period:
+        """Multiply each field by a round number
+
+        Example
+        -------
+
+        >>> p = Period(weeks=2, hours=1, minutes=30)
+        >>> p * 2
+        Period(P4WT2H60M)
+
+        """
+        if not isinstance(other, int):
+            return NotImplemented
+        overflow_secs, micros = divmod(self._microseconds * other, 1_000_000)
+        return Period(
+            years=self._years * other,
+            months=self._months * other,
+            weeks=self._weeks * other,
+            days=self._days * other,
+            hours=self._hours * other,
+            minutes=self._minutes * other,
+            seconds=self._seconds * other + overflow_secs,
+            microseconds=micros,
+        )
+
+    def __add__(self, other: Period | Duration) -> Period:
+        """Add the fields of another period to this one
+
+        Example
+        -------
+
+        >>> p = Period(weeks=2, hours=1, minutes=30)
+        >>> p + Period(days=-4, minutes=15)
+        Period(P2W-4DT1H45M)
+
+        """
+
+        if isinstance(other, Period):
+            return Period(
+                years=self._years + other._years,
+                months=self._months + other._months,
+                weeks=self._weeks + other._weeks,
+                days=self._days + other._days,
+                hours=self._hours + other._hours,
+                minutes=self._minutes + other._minutes,
+                seconds=self._seconds + other._seconds,
+                microseconds=self._microseconds + other._microseconds,
+            )
+        elif isinstance(other, Duration):
+            hrs, mins, secs, ms = other.as_tuple()
+            return self.replace(
+                hours=self._hours + hrs,
+                minutes=self._minutes + mins,
+                seconds=self._seconds + secs,
+                microseconds=self._microseconds + ms,
+            )
+
+        else:
+            return NotImplemented
+
+    def __radd__(self, other: Duration) -> Period:
+        if isinstance(other, Duration):
+            return self + other
+        return NotImplemented
+
+    def __sub__(self, other: Period | Duration) -> Period:
+        """Subtract the fields of another period from this one
+
+        Example
+        -------
+
+        >>> p = Period(weeks=2, hours=1, minutes=30)
+        >>> p - Period(days=-4, minutes=15)
+        Period(P2W4DT1H15M)
+        >>> p - Duration(minutes=15)
+        Period(P2WT1H-15M)
+
+        """
+        if isinstance(other, Period):
+            overflow_secs, micros = divmod(
+                self._microseconds - other._microseconds, 1_000_000
+            )
+            return Period(
+                years=self._years - other._years,
+                months=self._months - other._months,
+                weeks=self._weeks - other._weeks,
+                days=self._days - other._days,
+                hours=self._hours - other._hours,
+                minutes=self._minutes - other._minutes,
+                seconds=self._seconds - other._seconds + overflow_secs,
+                microseconds=micros,
+            )
+        elif isinstance(other, Duration):
+            return self + (-other)
+        else:
+            return NotImplemented
+
+    def time_component(self) -> Duration:
+        """The time component of the period
+
+        Example
+        -------
+
+        >>> p = Period(days=30, minutes=90)
+        >>> p.time_component()
+        Duration(01:30:00)
+
+        """
+        return Duration(
+            hours=self._hours,
+            minutes=self._minutes,
+            seconds=self._seconds,
+            microseconds=self._microseconds,
+        )
+
+    def as_tuple(self) -> tuple[int, int, int, int, int, int, int, int]:
+        """Convert to a tuple of (years, months, weeks, days, hours, minutes,
+        seconds, microseconds)
+
+        Example
+        -------
+
+        >>> p = Period(weeks=2, hours=1, minutes=30)
+        >>> p.as_tuple()
+        (0, 0, 2, 0, 1, 30, 0, 0)
+
+        """
+        return (
+            self._years,
+            self._months,
+            self._weeks,
+            self._days,
+            self._hours,
+            self._minutes,
+            self._seconds,
+            self._microseconds,
+        )
+
+
+Period.ZERO = Period()
+
+
+_TDateTime = TypeVar("_TDateTime", bound="DateTime")
 
 
 class DateTime(ABC):
@@ -132,6 +1068,19 @@ class DateTime(ABC):
         second = property(attrgetter("_py_dt.second"))
         microsecond = property(attrgetter("_py_dt.microsecond"))
 
+    def date(self) -> Date:
+        """The date part of the datetime
+
+        Example
+        -------
+
+        >>> d = UTCDateTime(2021, 1, 2, 3, 4, 5)
+        >>> d.date()
+        Date(2021-01-02)
+
+        """
+        return Date.from_py_date(self._py_dt.date())
+
     @abstractmethod
     def canonical_format(self, sep: Literal[" ", "T"] = "T") -> str:
         """Format as the canonical string representation. Each
@@ -146,7 +1095,7 @@ class DateTime(ABC):
 
     @classmethod
     @abstractmethod
-    def from_canonical_format(cls: type[_T], s: str, /) -> _T:
+    def from_canonical_format(cls: type[_TDateTime], s: str, /) -> _TDateTime:
         """Create an instance from the canonical string representation,
         which is different for each subclass.
 
@@ -164,9 +1113,9 @@ class DateTime(ABC):
 
     @classmethod
     @abstractmethod
-    def from_py(cls: type[_T], d: _datetime, /) -> _T:
+    def from_py_datetime(cls: type[_TDateTime], d: _datetime, /) -> _TDateTime:
         """Create an instance from a :class:`~datetime.datetime` object.
-        Inverse of :attr:`py`.
+        Inverse of :meth:`py_datetime`.
 
         Note
         ----
@@ -183,14 +1132,14 @@ class DateTime(ABC):
         the behavior on ambiguity.
         """
 
-    def py(self) -> _datetime:
+    def py_datetime(self) -> _datetime:
         """Get the underlying :class:`~datetime.datetime` object"""
         return self._py_dt
 
     if not TYPE_CHECKING and SPHINX_BUILD:  # pragma: no cover
 
         @abstractmethod
-        def replace(self: _T, /, **kwargs) -> _T:
+        def replace(self: _TDateTime, /, **kwargs) -> _TDateTime:
             """Construct a new instance with the given fields replaced.
 
             Arguments are the same as the constructor,
@@ -211,26 +1160,28 @@ class DateTime(ABC):
             Example
             -------
 
-            .. code-block:: python
+            >>> d = UTCDateTime(2020, 8, 15, 23, 12)
+            >>> d.replace(year=2021)
+            UTCDateTime(2021-08-15T23:12:00)
 
-                d = UTCDateTime(2020, 8, 15, 23, 12)
-                d.replace(year=2021) == UTCDateTime(2021, 8, 15, 23, 12)
-
-                z = ZonedDateTime(2020, 8, 15, 23, 12, tz="Europe/London")
-                z.replace(year=2021, disambiguate="later")
+            >>> z = ZonedDateTime(2020, 8, 15, 23, 12, tz="Europe/London")
+            >>> z.replace(year=2021, disambiguate="later")
+            ZonedDateTime(2021-08-15T23:12:00+01:00)
             """
 
     @classmethod
-    def _from_py_unchecked(cls: type[_T], d: _datetime, /) -> _T:
+    def _from_py_unchecked(
+        cls: type[_TDateTime], d: _datetime, /
+    ) -> _TDateTime:
         self = _object_new(cls)
         self._py_dt = d
         return self
 
     # We don't need to copy, because it's immutable
-    def __copy__(self: _T) -> _T:
+    def __copy__(self: _TDateTime) -> _TDateTime:
         return self
 
-    def __deepcopy__(self: _T, _: object) -> _T:
+    def __deepcopy__(self: _TDateTime, _: object) -> _TDateTime:
         return self
 
 
@@ -252,12 +1203,12 @@ class AwareDateTime(DateTime):
             Example
             -------
 
-            .. code-block:: python
+            >>> UTCDateTime(1970, 1, 1).timestamp()
+            0.0
 
-               UTCDateTime(1970, 1, 1).timestamp() == 0
-
-               ts = 1_123_000_000
-               UTCDateTime.from_timestamp(ts).timestamp() == ts
+            >>> ts = 1_123_000_000
+            >>> UTCDateTime.from_timestamp(ts).timestamp() == ts
+            True
             """
             return self._py_dt.timestamp()
 
@@ -266,7 +1217,7 @@ class AwareDateTime(DateTime):
 
     @property
     @abstractmethod
-    def offset(self) -> timedelta:
+    def offset(self) -> Duration:
         """The UTC offset of the datetime"""
 
     @abstractmethod
@@ -281,10 +1232,10 @@ class AwareDateTime(DateTime):
 
     @overload
     @abstractmethod
-    def as_offset(self, offset: timedelta, /) -> OffsetDateTime: ...
+    def as_offset(self, offset: Duration, /) -> OffsetDateTime: ...
 
     @abstractmethod
-    def as_offset(self, offset: timedelta | None = None, /) -> OffsetDateTime:
+    def as_offset(self, offset: Duration | None = None, /) -> OffsetDateTime:
         """Convert into an equivalent OffsetDateTime.
         Optionally, specify the offset to use.
         The result will always represent the same moment in time.
@@ -339,12 +1290,12 @@ class AwareDateTime(DateTime):
             Example
             -------
 
-            .. code-block:: python
-
-               UTCDateTime(2020, 8, 15, hour=23) == UTCDateTime(2020, 8, 15, hour=23)
-               OffsetDateTime(2020, 8, 15, hour=23, offset=hours(1)) == (
-                   ZonedDateTime(2020, 8, 15, hour=18, tz="America/New_York")
-               )
+            >>> UTCDateTime(2020, 8, 15, hour=23) == UTCDateTime(2020, 8, 15, hour=23)
+            True
+            >>> OffsetDateTime(2020, 8, 15, hour=23, offset=hours(1)) == (
+            ...     ZonedDateTime(2020, 8, 15, hour=18, tz="America/New_York")
+            ... )
+            True
             """
 
     @abstractmethod
@@ -355,11 +1306,11 @@ class AwareDateTime(DateTime):
 
         Example
         -------
-        .. code-block:: python
 
-           OffsetDateTime(2020, 8, 15, hour=23, offset=hours(8)) < (
-               ZoneDateTime(2020, 8, 15, hour=20, tz="Europe/Amsterdam")
-           )
+        >>> OffsetDateTime(2020, 8, 15, hour=23, offset=hours(8)) < (
+        ...     ZoneDateTime(2020, 8, 15, hour=20, tz="Europe/Amsterdam")
+        ... )
+        True
         """
 
     @abstractmethod
@@ -370,11 +1321,11 @@ class AwareDateTime(DateTime):
 
         Example
         -------
-        .. code-block:: python
 
-           OffsetDateTime(2020, 8, 15, hour=23, offset=hours(8)) <= (
-               ZoneDateTime(2020, 8, 15, hour=20, tz="Europe/Amsterdam")
-           )
+        >>> OffsetDateTime(2020, 8, 15, hour=23, offset=hours(8)) <= (
+        ...     ZoneDateTime(2020, 8, 15, hour=20, tz="Europe/Amsterdam")
+        ... )
+        True
         """
 
     @abstractmethod
@@ -385,11 +1336,11 @@ class AwareDateTime(DateTime):
 
         Example
         -------
-        .. code-block:: python
 
-           OffsetDateTime(2020, 8, 15, hour=19, offset=hours(-8)) > (
-               ZoneDateTime(2020, 8, 15, hour=20, tz="Europe/Amsterdam")
-           )
+        >>> OffsetDateTime(2020, 8, 15, hour=19, offset=hours(-8)) > (
+        ...     ZoneDateTime(2020, 8, 15, hour=20, tz="Europe/Amsterdam")
+        ... )
+        True
         """
 
     @abstractmethod
@@ -400,11 +1351,11 @@ class AwareDateTime(DateTime):
 
         Example
         -------
-        .. code-block:: python
 
-           OffsetDateTime(2020, 8, 15, hour=19, offset=hours(-8)) >= (
-               ZoneDateTime(2020, 8, 15, hour=20, tz="Europe/Amsterdam")
-           )
+        >>> OffsetDateTime(2020, 8, 15, hour=19, offset=hours(-8)) >= (
+        ...     ZoneDateTime(2020, 8, 15, hour=20, tz="Europe/Amsterdam")
+        ... )
+        True
         """
 
     # Mypy doesn't like overloaded overrides, but we'd like to document
@@ -412,7 +1363,7 @@ class AwareDateTime(DateTime):
     if not TYPE_CHECKING:  # pragma: no branch
 
         @abstractmethod
-        def __sub__(self, other: AwareDateTime) -> timedelta:
+        def __sub__(self, other: AwareDateTime) -> Duration:
             """Calculate the duration between two datetimes
 
             ``a - b`` is equivalent to ``a.as_utc() - b.as_utc()``
@@ -420,14 +1371,13 @@ class AwareDateTime(DateTime):
             Example
             -------
 
-            .. code-block:: python
-
-               d = UTCDateTime(2020, 8, 15, hour=23)
-               d - ZoneDateTime(2020, 8, 15, hour=20, tz="Europe/Amsterdam")  # 5 hours
+            >>> d = UTCDateTime(2020, 8, 15, hour=23)
+            >>> d - ZonedDateTime(2020, 8, 15, hour=20, tz="Europe/Amsterdam")
+            Duration(05:00:00)
             """
 
     @abstractmethod
-    def exact_eq(self: _T, other: _T, /) -> bool:
+    def exact_eq(self: _TDateTime, other: _TDateTime, /) -> bool:
         """Compare objects by their values (instead of their UTC equivalence).
         Different types are never equal.
 
@@ -438,12 +1388,13 @@ class AwareDateTime(DateTime):
 
         Examples
         --------
-        .. code-block:: python
 
-           a = OffsetDateTime(2020, 8, 15, hour=12, offset=hours(1))
-           b = OffsetDateTime(2020, 8, 15, hour=13, offset=hours(2))
-           a == b  # True: equivalent UTC times
-           a.exact_eq(b)  # False: different values (hour and offset)
+        >>> a = OffsetDateTime(2020, 8, 15, hour=12, offset=hours(1))
+        >>> b = OffsetDateTime(2020, 8, 15, hour=13, offset=hours(2))
+        >>> a == b
+        True  # equivalent UTC times
+        >>> a.exact_eq(b)
+        False  # different values (hour and offset)
         """
 
 
@@ -457,10 +1408,8 @@ class UTCDateTime(AwareDateTime):
     Example
     -------
 
-    .. code-block:: python
-
-       from whenever import UTCDateTime
-       py311_release_livestream = UTCDateTime(2022, 10, 24, hour=17)
+    >>> from whenever import UTCDateTime
+    >>> py311_release_livestream = UTCDateTime(2022, 10, 24, hour=17)
 
     Note
     ----
@@ -518,18 +1467,16 @@ class UTCDateTime(AwareDateTime):
         Example
         -------
 
-        .. code-block:: python
-
-           UTCDateTime.from_timestamp(0) == UTCDateTime(1970, 1, 1)
-           d = UTCDateTime.from_timestamp(1_123_000_000.45)
-           d == UTCDateTime(2004, 8, 2, 16, 26, 40, 450_000)
-
-           UTCDateTime.from_timestamp(d.timestamp()) == d
+        >>> UTCDateTime.from_timestamp(0) == UTCDateTime(1970, 1, 1)
+        >>> d = UTCDateTime.from_timestamp(1_123_000_000.45)
+        UTCDateTime(2004-08-02T16:26:40.45Z)
+        >>> UTCDateTime.from_timestamp(d.timestamp()) == d
+        True
         """
         return cls._from_py_unchecked(_fromtimestamp(i, _UTC))
 
     @classmethod
-    def from_py(cls, d: _datetime, /) -> UTCDateTime:
+    def from_py_datetime(cls, d: _datetime, /) -> UTCDateTime:
         if d.tzinfo is not _UTC:
             raise ValueError(
                 "Can only create UTCDateTime from UTC datetime, "
@@ -537,7 +1484,7 @@ class UTCDateTime(AwareDateTime):
             )
         return cls._from_py_unchecked(d)
 
-    offset = timedelta()
+    offset = Duration.ZERO
 
     if TYPE_CHECKING:  # pragma: no branch
         # We could have used typing.Unpack, but that's only available
@@ -599,57 +1546,68 @@ class UTCDateTime(AwareDateTime):
             return NotImplemented
         return self._py_dt >= other._py_dt
 
-    def __add__(self, other: timedelta) -> UTCDateTime:
-        """Add a timedelta to this datetime
+    def __add__(self, delta: Duration | Period) -> UTCDateTime:
+        """Add a time amount to this datetime
 
         Example
         -------
-        .. code-block:: python
 
-           d = UTCDateTime(2020, 8, 15, hour=23, minute=12)
-           d + timedelta(days=1, seconds=5) == UTCDateTime(
-               2020, 8, 16, hour=23, minute=12, second=5
-           )
+        >>> d = UTCDateTime(2020, 8, 15, hour=23, minute=12)
+        >>> d + Duration(hours=24, seconds=5)
+        UTCDateTime(2020-08-16 23:12:05Z)
+
+        >>> d + Period(years=1, days=2)
+        UTCDateTime(2021-08-17 23:12:00Z)
         """
-        if not isinstance(other, timedelta):
-            return NotImplemented
-        return self._from_py_unchecked(self._py_dt + other)
+        if isinstance(delta, Duration):
+            return self._from_py_unchecked(self._py_dt + delta.py_timedelta())
+        elif isinstance(delta, Period):
+            years, months, weeks, days, *_ = delta.as_tuple()
+            date = self.date().add(years, months, weeks, days)
+            return (
+                self.replace(year=date.year, month=date.month, day=date.day)
+                + delta.time_component()
+            )
+        return NotImplemented
 
     if TYPE_CHECKING:
 
         @overload
-        def __sub__(self, other: AwareDateTime) -> timedelta: ...
+        def __sub__(self, other: AwareDateTime) -> Duration: ...
 
         @overload
-        def __sub__(self, other: timedelta) -> UTCDateTime: ...
+        def __sub__(self, other: Duration | Period) -> UTCDateTime: ...
 
         def __sub__(
-            self, other: AwareDateTime | timedelta
-        ) -> AwareDateTime | timedelta: ...
+            self, other: AwareDateTime | Duration | Period
+        ) -> UTCDateTime | Duration: ...
 
     else:
 
         def __sub__(
-            self, other: timedelta | AwareDateTime
-        ) -> AwareDateTime | timedelta:
-            """Subtract another datetime or timedelta
+            self, other: Duration | Period | AwareDateTime
+        ) -> UTCDateTime | Duration:
+            """Subtract another datetime or time amount
 
             Example
             -------
 
-            .. code-block:: python
-
-               d = UTCDateTime(2020, 8, 15, hour=23, minute=12)
-               d - timedelta(days=1, seconds=5) == UTCDateTime(
-                   2020, 8, 14, hour=23, minute=11, second=55
-               )
-
-               d - UTCDateTime(2020, 8, 14) > timedelta(days=1)
+            >>> d = UTCDateTime(2020, 8, 15, hour=23, minute=12)
+            >>> d - Duration(hours=24, seconds=5)
+            UTCDateTime(2020-08-14 23:11:55Z)
+            >>> d - UTCDateTime(2020, 8, 14)
+            Duration(47:12:00)
+            >>> d - Period(months=2, days=3, minutes=5)
+            UTCDateTime(2020-06-12 23:06:00Z)
             """
             if isinstance(other, AwareDateTime):
-                return self._py_dt - other._py_dt
-            elif isinstance(other, timedelta):
-                return self._from_py_unchecked(self._py_dt - other)
+                return Duration.from_py_timedelta(self._py_dt - other._py_dt)
+            elif isinstance(other, Duration):
+                return self._from_py_unchecked(
+                    self._py_dt - other.py_timedelta()
+                )
+            elif isinstance(other, Period):
+                return self + -other
             return NotImplemented
 
     def as_utc(self) -> UTCDateTime:
@@ -659,26 +1617,27 @@ class UTCDateTime(AwareDateTime):
     def as_offset(self, /) -> OffsetDateTime: ...
 
     @overload
-    def as_offset(self, offset: timedelta, /) -> OffsetDateTime: ...
+    def as_offset(self, offset: Duration, /) -> OffsetDateTime: ...
 
-    def as_offset(self, offset: timedelta | None = None, /) -> OffsetDateTime:
+    def as_offset(self, offset: Duration | None = None, /) -> OffsetDateTime:
         return OffsetDateTime._from_py_unchecked(
             self._py_dt.astimezone(
-                _timezone(offset) if offset else _zero_timezone
+                _timezone(offset.py_timedelta()) if offset else _zero_timezone
             )
         )
 
     @classmethod
     def strptime(cls, s: str, /, fmt: str) -> UTCDateTime:
-        """Simple alias for ``UTCDateTime.from_py(datetime.strptime(s, fmt))``
+        """Simple alias for
+        ``UTCDateTime.from_py_datetime(datetime.strptime(s, fmt))``
 
         Example
         -------
 
-        .. code-block:: python
-
-            UTCDateTime.strptime("2020-08-15+0000", "%Y-%m-%d%z") == UTCDateTime(2020, 8, 15)
-            UTCDateTime.strptime("2020-08-15", "%Y-%m-%d")
+        >>> UTCDateTime.strptime("2020-08-15+0000", "%Y-%m-%d%z")
+        UTCDateTime(2020-08-15 00:00:00Z)
+        >>> UTCDateTime.strptime("2020-08-15", "%Y-%m-%d")
+        UTCDateTime(2020-08-15 00:00:00Z)
 
         Note
         ----
@@ -704,10 +1663,8 @@ class UTCDateTime(AwareDateTime):
         Example
         -------
 
-        .. code-block:: python
-
-            >>> UTCDateTime(2020, 8, 15, hour=23, minute=12).rfc2822()
-            "Sat, 15 Aug 2020 23:12:00 GMT"
+        >>> UTCDateTime(2020, 8, 15, hour=23, minute=12).rfc2822()
+        "Sat, 15 Aug 2020 23:12:00 GMT"
         """
         return format_datetime(self._py_dt, usegmt=True)
 
@@ -720,17 +1677,15 @@ class UTCDateTime(AwareDateTime):
         Example
         -------
 
-        .. code-block:: python
+        >>> UTCDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 GMT")
+        UTCDateTime(2020-08-15 23:12:00Z)
 
-            UTCDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 GMT")
-            # -> UTCDateTime(2020-08-15 23:12:00Z)
+        >>> # also valid:
+        >>> UTCDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 +0000")
+        >>> UTCDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 UT")
 
-            # also valid:
-            UTCDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 +0000")
-            UTCDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 UT")
-
-            # Error: nonzero offset. Use OffsetDateTime.from_rfc2822() instead
-            UTCDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 +0200")
+        >>> # Error: nonzero offset. Use OffsetDateTime.from_rfc2822() instead
+        >>> UTCDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 +0200")
 
 
         Warning
@@ -756,16 +1711,14 @@ class UTCDateTime(AwareDateTime):
     def rfc3339(self) -> str:
         """Format as an RFC 3339 string
 
-        For UTCDateTime, equivalent to :meth:`~AwareDateTime.canonical_format`.
+        For UTCDateTime, equivalent to :meth:`~DateTime.canonical_format`.
         Inverse of :meth:`from_rfc3339`.
 
         Example
         -------
 
-        .. code-block:: python
-
-            >>> UTCDateTime(2020, 8, 15, hour=23, minute=12).rfc3339()
-            "2020-08-15T23:12:00Z"
+        >>> UTCDateTime(2020, 8, 15, hour=23, minute=12).rfc3339()
+        "2020-08-15T23:12:00Z"
         """
         return f"{self._py_dt.isoformat()[:-6]}Z"
 
@@ -778,18 +1731,16 @@ class UTCDateTime(AwareDateTime):
         Example
         -------
 
-        .. code-block:: python
-
-            UTCDateTime.from_rfc3339("2020-08-15T23:12:00Z")
-            # -> UTCDateTime(2020-08-15 23:12:00Z)
-
-            # also valid:
-            UTCDateTime.from_rfc3339("2020-08-15T23:12:00+00:00")
-            UTCDateTime.from_rfc3339("2020-08-15_23:12:00.34Z")
-            UTCDateTime.from_rfc3339("2020-08-15t23:12:00z")
-
-            # not valid (nonzero offset):
-            UTCDateTime.from_rfc3339("2020-08-15T23:12:00+02:00")
+        >>> UTCDateTime.from_rfc3339("2020-08-15T23:12:00Z")
+        UTCDateTime(2020-08-15 23:12:00Z)
+        >>>
+        >>> # also valid:
+        >>> UTCDateTime.from_rfc3339("2020-08-15T23:12:00+00:00")
+        >>> UTCDateTime.from_rfc3339("2020-08-15_23:12:00.34Z")
+        >>> UTCDateTime.from_rfc3339("2020-08-15t23:12:00z")
+        >>>
+        >>> # not valid (nonzero offset):
+        >>> UTCDateTime.from_rfc3339("2020-08-15T23:12:00+02:00")
 
         Warning
         -------
@@ -824,11 +1775,9 @@ class OffsetDateTime(AwareDateTime):
     Example
     -------
 
-    .. code-block:: python
-
-       from whenever import hours
-       # 9 AM in Salt Lake City, with the UTC offset at the time
-       pycon23_started = OffsetDateTime(2023, 4, 21, hour=9, offset=hours(-6))
+    >>> # 9 AM in Salt Lake City, with the UTC offset at the time
+    >>> pycon23_start = OffsetDateTime(2023, 4, 21, hour=9, offset=-6)
+    OffsetDateTime(2023-04-21 09:00:00-06:00)
 
     Note
     ----
@@ -866,7 +1815,7 @@ class OffsetDateTime(AwareDateTime):
         second: int = 0,
         microsecond: int = 0,
         *,
-        offset: timedelta,
+        offset: int | Duration,
     ) -> None:
         self._py_dt = _datetime(
             year,
@@ -876,13 +1825,19 @@ class OffsetDateTime(AwareDateTime):
             minute,
             second,
             microsecond,
-            _timezone(offset),
+            _timezone(
+                _timedelta(hours=offset)
+                if isinstance(offset, int)
+                else offset.py_timedelta()
+            ),
         )
 
     @classmethod
-    def now(cls, offset: timedelta) -> OffsetDateTime:
+    def now(cls, offset: Duration) -> OffsetDateTime:
         """Create an instance at the current time with the given offset"""
-        return cls._from_py_unchecked(_datetime.now(_timezone(offset)))
+        return cls._from_py_unchecked(
+            _datetime.now(_timezone(offset.py_timedelta()))
+        )
 
     def canonical_format(self, sep: Literal[" ", "T"] = "T") -> str:
         return self._py_dt.isoformat(sep)
@@ -894,27 +1849,26 @@ class OffsetDateTime(AwareDateTime):
         return cls._from_py_unchecked(_fromisoformat(s))
 
     @classmethod
-    def from_timestamp(cls, i: float, /, offset: timedelta) -> OffsetDateTime:
+    def from_timestamp(cls, i: float, /, offset: Duration) -> OffsetDateTime:
         """Create a OffsetDateTime from a UNIX timestamp.
         The inverse of :meth:`~AwareDateTime.timestamp`.
 
         Example
         -------
 
-        .. code-block:: python
-
-           OffsetDateTime.from_timestamp(0, offset=hours(3)) == (
-               OffsetDateTime(1970, 1, 1, 3, offset=hours(3))
-           )
-           d = OffsetDateTime.from_timestamp(1_123_000_000.45, offset=hours(-2))
-           d == OffsetDateTime(2004, 8, 2, 14, 26, 40, 450_000, offset=hours(-2))
-
-           OffsetDateTime.from_timestamp(d.timestamp(), d.offset) == d
+        >>> OffsetDateTime.from_timestamp(0, offset=hours(3))
+        OffsetDateTime(1970-01-01 03:00:00+03:00)
+        >>>d = OffsetDateTime.from_timestamp(1_123_000_000.45, offset=hours(-2))
+        OffsetDateTime(2004-08-02 14:26:40.45-02:00)
+        >>> OffsetDateTime.from_timestamp(d.timestamp(), d.offset) == d
+        True
         """
-        return cls._from_py_unchecked(_fromtimestamp(i, _timezone(offset)))
+        return cls._from_py_unchecked(
+            _fromtimestamp(i, _timezone(offset.py_timedelta()))
+        )
 
     @classmethod
-    def from_py(cls, d: _datetime, /) -> OffsetDateTime:
+    def from_py_datetime(cls, d: _datetime, /) -> OffsetDateTime:
         if not isinstance(d.tzinfo, _timezone):
             raise ValueError(
                 "Datetime's tzinfo is not a datetime.timezone, "
@@ -935,7 +1889,7 @@ class OffsetDateTime(AwareDateTime):
             minute: int | NOT_SET = NOT_SET(),
             second: int | NOT_SET = NOT_SET(),
             microsecond: int | NOT_SET = NOT_SET(),
-            offset: timedelta | NOT_SET = NOT_SET(),
+            offset: Duration | NOT_SET = NOT_SET(),
         ) -> OffsetDateTime: ...
 
     else:
@@ -944,7 +1898,9 @@ class OffsetDateTime(AwareDateTime):
             if not _no_tzinfo_or_fold(kwargs):
                 raise TypeError("tzinfo and fold are not allowed arguments")
             try:
-                kwargs["tzinfo"] = _timezone(kwargs.pop("offset"))
+                kwargs["tzinfo"] = _timezone(
+                    kwargs.pop("offset").py_timedelta()
+                )
             except KeyError:
                 pass
             return self._from_py_unchecked(self._py_dt.replace(**kwargs))
@@ -960,9 +1916,9 @@ class OffsetDateTime(AwareDateTime):
             return self._py_dt == other._py_dt
 
     @property
-    def offset(self) -> timedelta:
+    def offset(self) -> Duration:
         # We know that offset is never None, because we set it in __init__
-        return self._py_dt.utcoffset()  # type: ignore[return-value]
+        return Duration.from_py_timedelta(self._py_dt.utcoffset())  # type: ignore[arg-type]
 
     def exact_eq(self, other: OffsetDateTime, /) -> bool:
         # FUTURE: there's probably a faster way to do this
@@ -988,23 +1944,21 @@ class OffsetDateTime(AwareDateTime):
             return NotImplemented
         return self._py_dt >= other._py_dt
 
-    def __sub__(self, other: AwareDateTime) -> timedelta:
-        """Subtract another datetime to get the timedelta between them
+    def __sub__(self, other: AwareDateTime) -> Duration:
+        """Subtract another datetime to get the duration between them
 
         Example
         -------
 
-        .. code-block:: python
+        >>> d = UTCDateTime(2020, 8, 15, 23, 12)
+        >>> d - Duration(hours=28, seconds=5)
+        UTCDateTime(2020-08-14 19:11:55Z)
 
-            d = OffsetDateTime(2020, 8, 15, 23, 12, offset=hours(1))
-            d - timedelta(days=1, hours=4, seconds=5) == OffsetDateTime(
-                2020, 8, 14, 23, 11, 55, offset=hours(-3)
-            )
-
-            d - OffsetDateTime(2020, 8, 14, offset=hours(0)) > timedelta(days=1)
+        >>> d - OffsetDateTime(2020, 8, 15, offset=hours(-5))
+        Duration(18:12:00)
         """
         if isinstance(other, AwareDateTime):
-            return self._py_dt - other._py_dt
+            return Duration.from_py_timedelta(self._py_dt - other._py_dt)
         return NotImplemented
 
     def as_utc(self) -> UTCDateTime:
@@ -1014,29 +1968,27 @@ class OffsetDateTime(AwareDateTime):
     def as_offset(self, /) -> OffsetDateTime: ...
 
     @overload
-    def as_offset(self, offset: timedelta, /) -> OffsetDateTime: ...
+    def as_offset(self, offset: Duration, /) -> OffsetDateTime: ...
 
-    def as_offset(self, offset: timedelta | None = None, /) -> OffsetDateTime:
+    def as_offset(self, offset: Duration | None = None, /) -> OffsetDateTime:
         return (
             self
             if offset is None
             else self._from_py_unchecked(
-                self._py_dt.astimezone(_timezone(offset))
+                self._py_dt.astimezone(_timezone(offset.py_timedelta()))
             )
         )
 
     @classmethod
     def strptime(cls, s: str, /, fmt: str) -> OffsetDateTime:
-        """Simple alias for ``OffsetDateTime.from_py(datetime.strptime(s, fmt))``
+        """Simple alias for
+        ``OffsetDateTime.from_py_datetime(datetime.strptime(s, fmt))``
 
         Example
         -------
 
-        .. code-block:: python
-
-            OffsetDateTime.strptime(
-                "2020-08-15+0200", "%Y-%m-%d%z"
-            ) == OffsetDateTime(2020, 8, 15, offset=hours(2))
+        >>> OffsetDateTime.strptime("2020-08-15+0200", "%Y-%m-%d%z")
+        OffsetDateTime(2020-08-15 00:00:00+02:00)
 
         Note
         ----
@@ -1063,10 +2015,8 @@ class OffsetDateTime(AwareDateTime):
         Example
         -------
 
-        .. code-block:: python
-
-            >>> OffsetDateTime(2020, 8, 15, 23, 12, offset=hours(2)).rfc2822()
-            "Sat, 15 Aug 2020 23:12:00 +0200"
+        >>> OffsetDateTime(2020, 8, 15, 23, 12, offset=hours(2)).rfc2822()
+        "Sat, 15 Aug 2020 23:12:00 +0200"
         """
         return format_datetime(self._py_dt)
 
@@ -1079,15 +2029,12 @@ class OffsetDateTime(AwareDateTime):
         Example
         -------
 
-        .. code-block:: python
-
-            OffsetDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 +0200")
-            # -> OffsetDateTime(2020-08-15 23:12:00+02:00)
-
-            # also valid:
-            OffsetDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 UT")
-            OffsetDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 GMT")
-            OffsetDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 MST")
+        >>> OffsetDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 +0200")
+        OffsetDateTime(2020-08-15 23:12:00+02:00)
+        >>> # also valid:
+        >>> OffsetDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 UT")
+        >>> OffsetDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 GMT")
+        >>> OffsetDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 MST")
 
         Warning
         -------
@@ -1110,10 +2057,8 @@ class OffsetDateTime(AwareDateTime):
         Example
         -------
 
-        .. code-block:: python
-
-            >>> OffsetDateTime(2020, 8, 15, hour=23, minute=12, offset=hours(4)).rfc3339()
-            "2020-08-15T23:12:00+04:00"
+        >>> OffsetDateTime(2020, 8, 15, hour=23, minute=12, offset=hours(4)).rfc3339()
+        "2020-08-15T23:12:00+04:00"
         """
         return self._py_dt.isoformat()
 
@@ -1126,15 +2071,12 @@ class OffsetDateTime(AwareDateTime):
         Example
         -------
 
-        .. code-block:: python
-
-            OffsetDateTime.from_rfc3339("2020-08-15T23:12:00+02:00")
-            # -> OffsetDateTime(2020-08-15 23:12:00+02:00)
-
-            # also valid:
-            OffsetDateTime.from_rfc3339("2020-08-15T23:12:00Z")
-            OffsetDateTime.from_rfc3339("2020-08-15_23:12:00.23-12:00")
-            OffsetDateTime.from_rfc3339("2020-08-15t23:12:00z")
+        >>> OffsetDateTime.from_rfc3339("2020-08-15T23:12:00+02:00")
+        OffsetDateTime(2020-08-15 23:12:00+02:00)
+        >>> # also valid:
+        >>> OffsetDateTime.from_rfc3339("2020-08-15T23:12:00Z")
+        >>> OffsetDateTime.from_rfc3339("2020-08-15_23:12:00.23-12:00")
+        >>> OffsetDateTime.from_rfc3339("2020-08-15t23:12:00z")
         """
         return cls._from_py_unchecked(_parse_rfc3339(s))
 
@@ -1146,7 +2088,10 @@ class OffsetDateTime(AwareDateTime):
         return (
             _unpkl_offset,
             self._py_dt.timetuple()[:6]
-            + (self._py_dt.microsecond, self._py_dt.utcoffset()),
+            + (
+                self._py_dt.microsecond,
+                self._py_dt.utcoffset().total_seconds(),  # type: ignore[union-attr]
+            ),
         )
 
 
@@ -1162,7 +2107,7 @@ def _unpkl_offset(
     minute: int,
     second: int,
     microsecond: int,
-    offset: timedelta,
+    offset_secs: float,
 ) -> OffsetDateTime:
     return OffsetDateTime._from_py_unchecked(
         _datetime(
@@ -1173,7 +2118,7 @@ def _unpkl_offset(
             minute,
             second,
             microsecond,
-            _timezone(offset),
+            _timezone(_timedelta(seconds=offset_secs)),
         )
     )
 
@@ -1185,22 +2130,19 @@ class ZonedDateTime(AwareDateTime):
     Example
     -------
 
-    .. code-block:: python
-
-       from whenever import ZonedDateTime
-
-       # always at 11:00 in London, regardless of the offset
-       changing_the_guard = ZonedDateTime(2024, 12, 8, hour=11, tz="Europe/London")
-
-       # Explicitly resolve ambiguities when clocks are set backwards.
-       # Default is "raise", which raises an exception
-       night_shift = ZonedDateTime(2023, 10, 29, 1, 15, tz="Europe/London", disambiguate="later")
-
-       # ZoneInfoNotFoundError: no such timezone
-       ZonedDateTime(2024, 12, 8, hour=11, tz="invalid")
-
-       # DoesntExistInZone: 2:15 AM does not exist on this day
-       ZonedDateTime(2023, 3, 26, 2, 15, tz="Europe/Amsterdam")
+    >>> from whenever import ZonedDateTime
+    >>>
+    >>> # always at 11:00 in London, regardless of the offset
+    >>> changing_the_guard = ZonedDateTime(2024, 12, 8, hour=11, tz="Europe/London")
+    >>>
+    >>> # Explicitly resolve ambiguities when clocks are set backwards.
+    >>> night_shift = ZonedDateTime(2023, 10, 29, 1, 15, tz="Europe/London", disambiguate="later")
+    >>>
+    >>> # ZoneInfoNotFoundError: no such timezone
+    >>> ZonedDateTime(2024, 12, 8, hour=11, tz="invalid")
+    >>>
+    >>> # DoesntExistInZone: 2:15 AM does not exist on this day
+    >>> ZonedDateTime(2023, 3, 26, 2, 15, tz="Europe/Amsterdam")
 
     Disambiguation
     --------------
@@ -1314,7 +2256,7 @@ class ZonedDateTime(AwareDateTime):
         return cls._from_py_unchecked(_fromtimestamp(i, ZoneInfo(tz)))
 
     @classmethod
-    def from_py(cls, d: _datetime, /) -> ZonedDateTime:
+    def from_py_datetime(cls, d: _datetime, /) -> ZonedDateTime:
         if not isinstance(d.tzinfo, ZoneInfo):
             raise ValueError(
                 "Can only create ZonedDateTime from ZoneInfo, "
@@ -1369,8 +2311,8 @@ class ZonedDateTime(AwareDateTime):
         tz = property(attrgetter("_py_dt.tzinfo.key"))
 
     @property
-    def offset(self) -> timedelta:
-        return self._py_dt.utcoffset()  # type: ignore[return-value]
+    def offset(self) -> Duration:
+        return Duration.from_py_timedelta(self._py_dt.utcoffset())  # type: ignore[arg-type]
 
     def __hash__(self) -> int:
         return hash(self._py_dt.astimezone(_UTC))
@@ -1418,67 +2360,100 @@ class ZonedDateTime(AwareDateTime):
             return NotImplemented
         return self._py_dt.astimezone(_UTC) >= other._py_dt
 
-    def __add__(self, delta: timedelta) -> ZonedDateTime:
-        """Add a timedelta to this datetime.
-        Unlike the standard library, this method accounts for DST transitions.
+    def __add__(self, delta: Duration | Period) -> ZonedDateTime:
+        """Add an amount of time, accounting for timezone changes (e.g. DST).
 
         Example
         -------
-        .. code-block:: python
 
-           d = ZonedDateTime(2023, 10, 28, 12, tz="Europe/Amsterdam", disambiguate="earlier")
+        >>> d = ZonedDateTime(2023, 10, 28, 12, tz="Europe/Amsterdam", disambiguate="earlier")
+        >>> # adding exact number of hours accounts for the DST transition
+        >>> d + Duration(hours=24)
+        ZonedDateTime(2023-10-29T11:00:00+01:00[Europe/Amsterdam])
+        >>> # adding days keeps the same local time
+        >>> d + Period(days=1)
+        ZonedDateTime(2023-10-29T12:00:00+01:00[Europe/Amsterdam])
 
-           # one hour skipped due to DST transition
-           d + timedelta(hours=24) # 2023-10-29T11:00:00+01:00[Europe/Amsterdam]
+        Note
+        ----
+        Addition of :class:`~whenever.Period` follows RFC 5545
+        (iCalendar) and the behavior of other established libraries:
+
+        - Units are added from largest to smallest.
+        - Adding days keeps the same local time. For example,
+          scheduling a 11am event "a days later" will result in
+          11am local time the next day, even if there was a DST transition.
+          Scheduling it exactly 24 hours would have resulted in
+          a different local time.
+        - If the resulting time is amgiuous after shifting the date,
+          the "compatible" disambiguation is used.
+          This means that for gaps, time is skipped forward.
         """
-        if not isinstance(delta, timedelta):
-            return NotImplemented
-        return self._from_py_unchecked(
-            (self._py_dt.astimezone(_UTC) + delta).astimezone(
-                self._py_dt.tzinfo
+        if isinstance(delta, Duration):
+            return self._from_py_unchecked(
+                (
+                    self._py_dt.astimezone(_UTC) + delta.py_timedelta()
+                ).astimezone(self._py_dt.tzinfo)
             )
-        )
+        elif isinstance(delta, Period):
+            years, months, weeks, days, *_ = delta.as_tuple()
+            date_old = self.date()
+            date_new = date_old.add(years, months, weeks, days)
+            return (
+                self
+                if date_new == date_old
+                else self.replace(
+                    year=date_new.year,
+                    month=date_new.month,
+                    day=date_new.day,
+                    disambiguate="compatible",
+                )
+            ) + delta.time_component()
+        else:
+            return NotImplemented
 
     if TYPE_CHECKING:
 
         @overload
-        def __sub__(self, other: AwareDateTime) -> timedelta: ...
+        def __sub__(self, other: AwareDateTime) -> Duration: ...
 
         @overload
-        def __sub__(self, other: timedelta) -> ZonedDateTime: ...
+        def __sub__(self, other: Duration | Period) -> ZonedDateTime: ...
 
         def __sub__(
-            self, other: AwareDateTime | timedelta
-        ) -> AwareDateTime | timedelta: ...
+            self, other: AwareDateTime | Duration | Period
+        ) -> AwareDateTime | Duration: ...
 
     else:
 
         def __sub__(
-            self, other: timedelta | AwareDateTime
-        ) -> AwareDateTime | timedelta:
-            """Subtract another datetime or timedelta"""
+            self, other: Duration | Period | AwareDateTime
+        ) -> AwareDateTime | Duration:
+            """Subtract another datetime or duration"""
             if isinstance(other, AwareDateTime):
-                return self._py_dt.astimezone(_UTC) - other._py_dt
-            elif isinstance(other, timedelta):
-                return self._from_py_unchecked(
-                    (self._py_dt.astimezone(_UTC) - other).astimezone(
-                        self._py_dt.tzinfo
-                    )
+                return Duration.from_py_timedelta(
+                    self._py_dt.astimezone(_UTC) - other._py_dt
                 )
+            elif isinstance(other, Duration):
+                return self._from_py_unchecked(
+                    (
+                        self._py_dt.astimezone(_UTC) - other.py_timedelta()
+                    ).astimezone(self._py_dt.tzinfo)
+                )
+            elif isinstance(other, Period):
+                return self + -other
             return NotImplemented
 
-    def ambiguous(self) -> bool:
+    def is_ambiguous(self) -> bool:
         """Whether the local time is ambiguous, e.g. due to a DST transition.
 
         Example
         -------
 
-        .. code-block:: python
-
-           >>> ZonedDateTime(2020, 8, 15, 23, tz="Europe/London", disambiguate="later").ambiguous()
-           False
-           >>> ZonedDateTime(2023, 10, 29, 2, 15, tz="Europe/Amsterdam", disambiguate="later").ambiguous()
-           True
+        >>> ZonedDateTime(2020, 8, 15, 23, tz="Europe/London", disambiguate="later").ambiguous()
+        False
+        >>> ZonedDateTime(2023, 10, 29, 2, 15, tz="Europe/Amsterdam", disambiguate="later").ambiguous()
+        True
         """
         return self._py_dt.astimezone(_UTC) != self._py_dt
 
@@ -1489,13 +2464,15 @@ class ZonedDateTime(AwareDateTime):
     def as_offset(self, /) -> OffsetDateTime: ...
 
     @overload
-    def as_offset(self, offset: timedelta, /) -> OffsetDateTime: ...
+    def as_offset(self, offset: Duration, /) -> OffsetDateTime: ...
 
-    def as_offset(self, offset: timedelta | None = None, /) -> OffsetDateTime:
+    def as_offset(self, offset: Duration | None = None, /) -> OffsetDateTime:
         return OffsetDateTime._from_py_unchecked(
             self._py_dt.astimezone(
                 # mypy doesn't know that offset is never None
-                _timezone(offset or self._py_dt.utcoffset())  # type: ignore[arg-type]
+                _timezone(self._py_dt.utcoffset())  # type: ignore[arg-type]
+                if offset is None
+                else _timezone(offset.py_timedelta())
             )
         )
 
@@ -1556,19 +2533,17 @@ class LocalDateTime(AwareDateTime):
     Example
     -------
 
-    .. code-block:: python
-
-       >>> # 8:00 in the system timezone—Paris in this case
-       >>> alarm = LocalDateTime(2024, 3, 31, hour=6)
-       LocalDateTime(2024-03-31 06:00:00+02:00)
-
-       >>> # Conversion based on Paris' offset
-       >>> alarm.as_utc()
-       UTCDateTime(2024-03-31 04:00:00)
-
-       >>> # unlike OffsetDateTime, it knows about DST transitions
-       >>> bedtime = alarm - hours(8)
-       LocalDateTime(2024-03-30 21:00:00+01:00)
+    >>> # 8:00 in the system timezone—Paris in this case
+    >>> alarm = LocalDateTime(2024, 3, 31, hour=6)
+    LocalDateTime(2024-03-31 06:00:00+02:00)
+    ...
+    >>> # Conversion based on Paris' offset
+    >>> alarm.as_utc()
+    UTCDateTime(2024-03-31 04:00:00)
+    ...
+    >>> # unlike OffsetDateTime, it knows about DST transitions
+    >>> bedtime = alarm - hours(8)
+    LocalDateTime(2024-03-30 21:00:00+01:00)
 
     Handling ambiguity
     ------------------
@@ -1611,39 +2586,33 @@ class LocalDateTime(AwareDateTime):
       change at any time, depending on some global mutable state.
       This would make it harder to reason about and use.
 
-    .. code-block:: python
-
-       >>> # initialization where the system timezone is America/New_York
-       >>> d = LocalDateTime(2020, 8, 15, hour=8)
-       LocalDateTime(2020-08-15 08:00:00-04:00)
-
-       >>> # we change the system timezone to Amsterdam
-       >>> os.environ["TZ"] = "Europe/Amsterdam"
-       >>> time.tzset()
-
-       >>> d  # object remains unchanged
-       LocalDateTime(2020-08-15 08:00:00-04:00)
+    >>> # initialization where the system timezone is America/New_York
+    >>> d = LocalDateTime(2020, 8, 15, hour=8)
+    LocalDateTime(2020-08-15 08:00:00-04:00)
+    ...
+    >>> # we change the system timezone to Amsterdam
+    >>> os.environ["TZ"] = "Europe/Amsterdam"
+    >>> time.tzset()
+    ...
+    >>> d  # object remains unchanged
+    LocalDateTime(2020-08-15 08:00:00-04:00)
 
     If you'd like to preserve the moment in time
     and calculate the new local time, simply call :meth:`~AwareDateTime.as_local`.
 
-    .. code-block:: python
-
-       >>> # same moment, but now with the clock time in Amsterdam
-       >>> d.as_local()
-       LocalDateTime(2020-08-15 14:00:00+02:00)
+    >>> # same moment, but now with the clock time in Amsterdam
+    >>> d.as_local()
+    LocalDateTime(2020-08-15 14:00:00+02:00)
 
     On the other hand, if you'd like to preserve the local time on the clock
     and calculate the corresponding moment in time:
 
-    .. code-block:: python
-
-       >>> # take the wall clock time...
-       >>> wall_clock = d.naive()
-       NaiveDateTime(2020-08-15 08:00:00)
-       >>> # ...and assume the system timezone (Amsterdam)
-       >>> wall_clock.assume_local()
-       LocalDateTime(2020-08-15 08:00:00+02:00)
+    >>> # take the wall clock time...
+    >>> wall_clock = d.naive()
+    NaiveDateTime(2020-08-15 08:00:00)
+    >>> # ...and assume the system timezone (Amsterdam)
+    >>> wall_clock.assume_local()
+    LocalDateTime(2020-08-15 08:00:00+02:00)
 
     Note
     ----
@@ -1712,21 +2681,18 @@ class LocalDateTime(AwareDateTime):
         Example
         -------
 
-        .. code-block:: python
-
-           # assuming system timezone is America/New_York
-           >>> LocalDateTime.from_timestamp(0)
-           LocalDateTime(1969-12-31T19:00:00-05:00)
-           >>> LocalDateTime.from_timestamp(1_123_000_000.45)
-           LocalDateTime(2005-08-12T12:26:40.45-04:00)
-
-           >>> LocalDateTime.from_timestamp(d.timestamp()) == d
-           True
+        >>> # assuming system timezone is America/New_York
+        >>> LocalDateTime.from_timestamp(0)
+        LocalDateTime(1969-12-31T19:00:00-05:00)
+        >>> LocalDateTime.from_timestamp(1_123_000_000.45)
+        LocalDateTime(2005-08-12T12:26:40.45-04:00)
+        >>> LocalDateTime.from_timestamp(d.timestamp()) == d
+        True
         """
         return cls._from_py_unchecked(_fromtimestamp(i).astimezone())
 
     @classmethod
-    def from_py(cls, d: _datetime, /) -> LocalDateTime:
+    def from_py_datetime(cls, d: _datetime, /) -> LocalDateTime:
         if not isinstance(d.tzinfo, _timezone):
             raise ValueError(
                 "Can only create LocalDateTime from a fixed-offset datetime, "
@@ -1738,10 +2704,10 @@ class LocalDateTime(AwareDateTime):
         return f"LocalDateTime({self})"
 
     @property
-    def offset(self) -> timedelta:
-        return self._py_dt.astimezone().utcoffset()  # type: ignore[return-value]
+    def offset(self) -> Duration:
+        return Duration.from_py_timedelta(self._py_dt.utcoffset())  # type: ignore[arg-type]
 
-    # TODO: include in canonical_format?
+    # TODO: include in canonical_format? Remove?
     @property
     def tzname(self) -> str | None:
         """The name of the timezone as provided by the system, if known.
@@ -1821,55 +2787,55 @@ class LocalDateTime(AwareDateTime):
 
         __hash__ = property(attrgetter("_py_dt.__hash__"))
 
-    def __add__(self, other: timedelta) -> LocalDateTime:
-        """Add a timedelta to this datetime
+    def __add__(self, other: Duration) -> LocalDateTime:
+        """Add a duration to this datetime
 
         Example
         -------
-        .. code-block:: python
 
-           >>> d = LocalDateTime(2020, 8, 15, hour=23, minute=12, fold=0)
-           >>> d + timedelta(days=1, seconds=5)
-           LocalDateTime(2020-08-16T23:12:05)
+        >>> d = LocalDateTime(2020, 8, 15, hour=23, minute=12, fold=0)
+        >>> d + Duration(hours=24, seconds=5)
+        LocalDateTime(2020-08-16 23:12:05)
 
         """
-        if not isinstance(other, timedelta):
+        if not isinstance(other, Duration):
             return NotImplemented
-        return self._from_py_unchecked((self._py_dt + other).astimezone())
+        return self._from_py_unchecked(
+            (self._py_dt + other.py_timedelta()).astimezone()
+        )
 
     if TYPE_CHECKING:
 
         @overload
-        def __sub__(self, other: AwareDateTime) -> timedelta: ...
+        def __sub__(self, other: AwareDateTime) -> Duration: ...
 
         @overload
-        def __sub__(self, other: timedelta) -> LocalDateTime: ...
+        def __sub__(self, other: Duration) -> LocalDateTime: ...
 
         def __sub__(
-            self, other: AwareDateTime | timedelta
-        ) -> AwareDateTime | timedelta: ...
+            self, other: AwareDateTime | Duration
+        ) -> AwareDateTime | Duration: ...
 
     else:
 
         def __sub__(
-            self, other: timedelta | AwareDateTime
-        ) -> AwareDateTime | timedelta:
-            """Subtract another datetime or timedelta
+            self, other: Duration | AwareDateTime
+        ) -> AwareDateTime | Duration:
+            """Subtract another datetime or duration
 
             Example
             -------
-            .. code-block:: python
 
-               >>> d = LocalDateTime(2020, 8, 15, hour=23, minute=12, fold=0)
-               >>> d - timedelta(days=1, seconds=5)
-               LocalDateTime(2020-08-14T23:11:55)
+            >>> d = LocalDateTime(2020, 8, 15, hour=23, minute=12, fold=0)
+            >>> d - Duration(hours=24, seconds=5)
+            LocalDateTime(2020-08-14 23:11:55)
 
             """
             if isinstance(other, AwareDateTime):
-                return self._py_dt - other._py_dt
-            elif isinstance(other, timedelta):
+                return Duration.from_py_timedelta(self._py_dt - other._py_dt)
+            elif isinstance(other, Duration):
                 return self._from_py_unchecked(
-                    (self._py_dt - other).astimezone()
+                    (self._py_dt - other.py_timedelta()).astimezone()
                 )
             return NotImplemented
 
@@ -1880,13 +2846,13 @@ class LocalDateTime(AwareDateTime):
     def as_offset(self, /) -> OffsetDateTime: ...
 
     @overload
-    def as_offset(self, offset: timedelta, /) -> OffsetDateTime: ...
+    def as_offset(self, offset: Duration, /) -> OffsetDateTime: ...
 
-    def as_offset(self, offset: timedelta | None = None, /) -> OffsetDateTime:
+    def as_offset(self, offset: Duration | None = None, /) -> OffsetDateTime:
         return OffsetDateTime._from_py_unchecked(
             self._py_dt
             if offset is None
-            else self._py_dt.astimezone(_timezone(offset))
+            else self._py_dt.astimezone(_timezone(offset.py_timedelta()))
         )
 
     def as_zoned(self, tz: str, /) -> ZonedDateTime:
@@ -1904,7 +2870,7 @@ class LocalDateTime(AwareDateTime):
             self._py_dt.timetuple()[:6]
             + (
                 self._py_dt.microsecond,
-                self._py_dt.utcoffset(),
+                self._py_dt.utcoffset().total_seconds(),  # type: ignore[union-attr]
                 self._py_dt.tzname(),
             ),
         )
@@ -1922,9 +2888,10 @@ def _unpkl_local(
     minute: int,
     second: int,
     microsecond: int,
-    offset: timedelta,
+    offset_secs: float,
     tzname: str,
 ) -> LocalDateTime:
+    # TODO: check rounding
     return LocalDateTime._from_py_unchecked(
         _datetime(
             year,
@@ -1934,7 +2901,7 @@ def _unpkl_local(
             minute,
             second,
             microsecond,
-            tzinfo=_timezone(offset, tzname),
+            tzinfo=_timezone(_timedelta(seconds=offset_secs), tzname),
         )
     )
 
@@ -1993,7 +2960,7 @@ class NaiveDateTime(DateTime):
         return cls._from_py_unchecked(_fromisoformat(s))
 
     @classmethod
-    def from_py(cls, d: _datetime, /) -> NaiveDateTime:
+    def from_py_datetime(cls, d: _datetime, /) -> NaiveDateTime:
         if d.tzinfo is not None:
             raise ValueError(
                 "Can only create NaiveDateTime from a naive datetime, "
@@ -2045,14 +3012,13 @@ class NaiveDateTime(DateTime):
 
             Example
             -------
-            .. code-block:: python
 
-               # True
-               NaiveDateTime(2020, 8, 15, 23) == NaiveDateTime(2020, 8, 15, 23)
-               # False
-               NaiveDateTime(2020, 8, 15, 23, 1) == NaiveDateTime(2020, 8, 15, 23)
-               # False. Use mypy's --strict-equality flag to detect this.
-               NaiveDateTime(2020, 8, 15) == UTCDateTime(2020, 8, 15)
+            >>> NaiveDateTime(2020, 8, 15, 23) == NaiveDateTime(2020, 8, 15, 23)
+            True
+            >>> NaiveDateTime(2020, 8, 15, 23, 1) == NaiveDateTime(2020, 8, 15, 23)
+            False
+            >>> NaiveDateTime(2020, 8, 15) == UTCDateTime(2020, 8, 15)
+            False  # Use mypy's --strict-equality flag to detect this.
 
             """
             if not isinstance(other, NaiveDateTime):
@@ -2082,67 +3048,83 @@ class NaiveDateTime(DateTime):
             return NotImplemented
         return self._py_dt >= other._py_dt
 
-    def __add__(self, other: timedelta) -> NaiveDateTime:
-        """Add a timedelta to this datetime
+    def __add__(self, other: Duration | Period) -> NaiveDateTime:
+        """Add a duration to this datetime
 
         Example
         -------
-        .. code-block:: python
 
-           d = NaiveDateTime(2020, 8, 15, hour=23, minute=12)
-           d + timedelta(days=1, seconds=5)  # 2020-08-16T23:12:05
+        >>> d = NaiveDateTime(2020, 8, 15, hour=23, minute=12)
+        >>> d + Duration(hours=24, seconds=5)
+        NaiveDateTime(2020-08-16 23:12:05)
+        >>> d + Period(years=3, months=2, days=1)
+        NaiveDateTime(2023-10-16 23:12:00)
         """
-        if not isinstance(other, timedelta):
-            return NotImplemented
-        return self._from_py_unchecked(self._py_dt + other)
+        if isinstance(other, Duration):
+            return self._from_py_unchecked(self._py_dt + other.py_timedelta())
+        elif isinstance(other, Period):
+            years, months, weeks, days, *_ = other.as_tuple()
+            date = self.date().add(years, months, weeks, days)
+            return (
+                self._from_py_unchecked(
+                    self._py_dt.replace(
+                        year=date.year, month=date.month, day=date.day
+                    )
+                )
+                + other.time_component()
+            )
+        return NotImplemented
 
     if TYPE_CHECKING:
 
         @overload
-        def __sub__(self, other: NaiveDateTime) -> timedelta: ...
+        def __sub__(self, other: NaiveDateTime) -> Duration: ...
 
         @overload
-        def __sub__(self, other: timedelta) -> NaiveDateTime: ...
+        def __sub__(self, other: Duration | Period) -> NaiveDateTime: ...
 
         def __sub__(
-            self, other: NaiveDateTime | timedelta
-        ) -> NaiveDateTime | timedelta: ...
+            self, other: NaiveDateTime | Duration | Period
+        ) -> NaiveDateTime | Duration: ...
 
     else:
 
         def __sub__(
-            self, other: timedelta | NaiveDateTime
-        ) -> NaiveDateTime | timedelta:
-            """Subtract another datetime or timedelta
+            self, other: Duration | Period | NaiveDateTime
+        ) -> NaiveDateTime | Duration:
+            """Subtract another datetime or time amount
 
             Example
             -------
 
-            .. code-block:: python
-
-               d = NaiveDateTime(2020, 8, 15, hour=23, minute=12)
-               d - timedelta(days=1, seconds=5)  # 2020-08-14T23:11:55
-
-               d - NaiveDateTime(2020, 8, 14)
+            >>> d = NaiveDateTime(2020, 8, 15, hour=23, minute=12)
+            >>> d - Duration(hours=24, seconds=5)
+            NaiveDateTime(2020-08-14 23:11:55)
+            >>> d - NaiveDateTime(2020, 8, 14)
+            Duration(47:12:00)
+            >>> d - Period(years=3, months=2, days=1, minutes=5)
+            NaiveDateTime(2017-06-14 23:07:00)
             """
             if isinstance(other, NaiveDateTime):
-                return self._py_dt - other._py_dt
-            elif isinstance(other, timedelta):
-                return self._from_py_unchecked(self._py_dt - other)
+                return Duration.from_py_timedelta(self._py_dt - other._py_dt)
+            elif isinstance(other, Duration):
+                return self._from_py_unchecked(
+                    self._py_dt - other.py_timedelta()
+                )
+            elif isinstance(other, Period):
+                return self + -other
             return NotImplemented
 
     @classmethod
     def strptime(cls, s: str, /, fmt: str) -> NaiveDateTime:
-        """Simple alias for ``NaiveDateTime.from_py(datetime.strptime(s, fmt))``
+        """Simple alias for
+        ``NaiveDateTime.from_py_datetime(datetime.strptime(s, fmt))``
 
         Example
         -------
 
-        .. code-block:: python
-
-            NaiveDateTime.strptime(
-                "2020-08-15", "%Y-%m-%d"
-            ) == NaiveDateTime(2020, 8, 15)
+        >>> NaiveDateTime.strptime("2020-08-15", "%Y-%m-%d")
+        NaiveDateTime(2020-08-15 00:00:00)
 
         Note
         ----
@@ -2164,27 +3146,24 @@ class NaiveDateTime(DateTime):
 
         Example
         -------
-        .. code-block:: python
 
-           >>> NaiveDateTime(2020, 8, 15, 23, 12).assume_utc()
-           UTCDateTime(2020-08-15 23:12:00Z)
+        >>> NaiveDateTime(2020, 8, 15, 23, 12).assume_utc()
+        UTCDateTime(2020-08-15 23:12:00Z)
         """
         return UTCDateTime._from_py_unchecked(self._py_dt.replace(tzinfo=_UTC))
 
-    def assume_offset(self, offset: timedelta, /) -> OffsetDateTime:
+    def assume_offset(self, offset: Duration, /) -> OffsetDateTime:
         """Assume the datetime is in the given offset,
         creating a :class:`~whenever.OffsetDateTime` instance.
 
         Example
         -------
 
-        .. code-block:: python
-
-           >>> NaiveDateTime(2020, 8, 15, 23, 12).assume_offset(hours(2))
-           OffsetDateTime(2020-08-15 23:12:00+02:00)
+        >>> NaiveDateTime(2020, 8, 15, 23, 12).assume_offset(hours(2))
+        OffsetDateTime(2020-08-15 23:12:00+02:00)
         """
         return OffsetDateTime._from_py_unchecked(
-            self._py_dt.replace(tzinfo=_timezone(offset))
+            self._py_dt.replace(tzinfo=_timezone(offset.py_timedelta()))
         )
 
     def assume_zoned(
@@ -2195,10 +3174,9 @@ class NaiveDateTime(DateTime):
 
         Example
         -------
-        .. code-block:: python
 
-           >>> NaiveDateTime(2020, 8, 15, 23, 12).assume_zoned("Europe/Amsterdam")
-           ZonedDateTime(2020-08-15 23:12:00+02:00[Europe/Amsterdam])
+        >>> NaiveDateTime(2020, 8, 15, 23, 12).assume_zoned("Europe/Amsterdam")
+        ZonedDateTime(2020-08-15 23:12:00+02:00[Europe/Amsterdam])
         """
         return ZonedDateTime._from_py_unchecked(
             _resolve_ambuguity(
@@ -2218,11 +3196,10 @@ class NaiveDateTime(DateTime):
 
         Example
         -------
-        .. code-block:: python
 
-           # assuming system timezone is America/New_York
-           >>> NaiveDateTime(2020, 8, 15, 23, 12).assume_local()
-           LocalDateTime(2020-08-15 23:12:00-04:00)
+        >>> # assuming system timezone is America/New_York
+        >>> NaiveDateTime(2020, 8, 15, 23, 12).assume_local()
+        LocalDateTime(2020-08-15 23:12:00-04:00)
         """
         return LocalDateTime._from_py_unchecked(
             _resolve_local_ambiguity(
@@ -2237,10 +3214,8 @@ class NaiveDateTime(DateTime):
         Example
         -------
 
-        .. code-block:: python
-
-            >>> NaiveDateTime(2020, 8, 15, 23, 12).rfc2822()
-            "Sat, 15 Aug 2020 23:12:00 -0000"
+        >>> NaiveDateTime(2020, 8, 15, 23, 12).rfc2822()
+        "Sat, 15 Aug 2020 23:12:00 -0000"
         """
         return format_datetime(self._py_dt)
 
@@ -2251,15 +3226,12 @@ class NaiveDateTime(DateTime):
         Example
         -------
 
-        .. code-block:: python
-
-            NaiveDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 -0000")
-            # -> NaiveDateTime(2020-08-15 23:12:00)
-
-            # Error: non-0000 offset
-            NaiveDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 GMT")
-            NaiveDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 +0000")
-            NaiveDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 -0100")
+        >>> NaiveDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 -0000")
+        NaiveDateTime(2020-08-15 23:12:00)
+        >>> # Error: non-0000 offset
+        >>> NaiveDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 GMT")
+        >>> NaiveDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 +0000")
+        >>> NaiveDateTime.from_rfc2822("Sat, 15 Aug 2020 23:12:00 -0100")
 
         Warning
         -------
@@ -2402,12 +3374,19 @@ _match_offset_str = re.compile(_OFFSET_RE).fullmatch
 _match_zoned_str = re.compile(rf"({_OFFSET_RE})\[([^\]]+)\]").fullmatch
 _fromisoformat = _datetime.fromisoformat
 _fromtimestamp = _datetime.fromtimestamp
-_zero_timezone = _timezone(timedelta())
+_zero_timezone = _timezone(_timedelta())
 _match_utc_rfc3339 = re.compile(
     r"\d{4}-\d{2}-\d{2}.\d{2}:\d{2}:\d{2}(\.\d{1,6})?(?:[Zz]|[+-]00:00)"
 ).fullmatch
 _match_rfc3339 = re.compile(
     r"\d{4}-\d{2}-\d{2}.\d{2}:\d{2}:\d{2}(\.\d{1,6})?(?:[Zz]|[+-]\d{2}:\d{2})"
+).fullmatch
+_match_period = re.compile(
+    r"P(?:([-+]?\d+)Y)?(?:([-+]?\d+)M)?(?:([-+]?\d+)W)?(?:([-+]?\d+)D)?"
+    r"(?:T(?:([-+]?\d+)H)?(?:([-+]?\d+)M)?(?:([-+]?\d+(?:\.\d{1,6})?)?S)?)?"
+).fullmatch
+_match_duration = re.compile(
+    r"([-+]?)(\d{2,}):([0-5]\d):([0-5]\d(?:\.\d{1,6})?)"
 ).fullmatch
 # Before Python 3.11, fromisoformat() is less capable
 if sys.version_info < (3, 11):  # pragma: no cover
@@ -2470,22 +3449,15 @@ _as_fold: Callable[[Disambiguate], Fold] = {  # type: ignore[assignment]
 }.__getitem__
 
 
-def hours(i: int, /) -> timedelta:
-    """Create a :class:`~datetime.timedelta` with the given number of hours.
-    ``hours(1) == timedelta(hours=1)``
+def hours(i: int, /) -> Duration:
+    """Create a :class:`~Duration` with the given number of hours.
+    ``hours(1) == Duration(hours=1)``
     """
-    return timedelta(hours=i)
+    return Duration(hours=i)
 
 
-def minutes(i: int, /) -> timedelta:
-    """Create a :class:`~datetime.timedelta` with the given number of minutes.
-    ``minutes(1) == timedelta(minutes=1)``
+def minutes(i: int, /) -> Duration:
+    """Create a :class:`Duration` with the given number of minutes.
+    ``minutes(1) == Duration(minutes=1)``
     """
-    return timedelta(minutes=i)
-
-
-def days(i: int, /) -> timedelta:
-    """Create a :class:`~datetime.timedelta` with the given number of days.
-    ``days(1) == timedelta(days=1)``
-    """
-    return timedelta(i)
+    return Duration(minutes=i)

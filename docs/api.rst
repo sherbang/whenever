@@ -3,10 +3,13 @@
 📖 API reference
 ================
 
-Unless otherwise noted, all classes are immutable.
+All classes are immutable.
+
+Datetime classes
+----------------
 
 Base classes
-------------
+~~~~~~~~~~~~
 
 .. autoclass:: whenever.DateTime
    :members:
@@ -18,7 +21,7 @@ Base classes
    :special-members: __eq__, __lt__, __le__, __gt__, __ge__, __sub__, naive
 
 Concrete classes
-----------------
+~~~~~~~~~~~~~~~~
 
 .. autoclass:: whenever.UTCDateTime
    :members: now, from_timestamp, __add__, __sub__, strptime, rfc2822, from_rfc2822, rfc3339, from_rfc3339
@@ -27,18 +30,31 @@ Concrete classes
    :members: now, from_timestamp, strptime, rfc2822, from_rfc2822, rfc3339, from_rfc3339
 
 .. autoclass:: whenever.ZonedDateTime
-   :members: now, from_timestamp, tz, __add__, __sub__, ambiguous
+   :members: now, from_timestamp, tz, __add__, __sub__, is_ambiguous
 
 .. autoclass:: whenever.LocalDateTime
    :members: now, from_timestamp, tzname, __add__, __sub__
 
 .. autoclass:: whenever.NaiveDateTime
-   :members: __eq__, __add__, __sub__, assume_utc, assume_offset, assume_zoned, strptime, rfc2822, from_rfc2822
+   :members: __eq__, __add__, __sub__, assume_utc, assume_offset, assume_zoned, assume_local, strptime, rfc2822, from_rfc2822
 
-Helpers
--------
 
-.. autofunction:: whenever.days
+Other classes
+-------------
+
+.. autoclass:: whenever.Duration
+   :members:
+   :special-members: __eq__, __neg__, __add__, __sub__, __mul__, __truediv__, __bool__, __abs__, __gt__
+
+.. autoclass:: whenever.Period
+   :members:
+   :undoc-members: years, months, days, hours, minutes, seconds, microseconds
+   :special-members: __eq__, __neg__, __add__, __sub__, __mul__, __bool__
+
+.. autoclass:: whenever.Date
+   :members:
+   :special-members: __eq__, __lt__, __le__, __gt__, __ge__, __sub__
+
 .. autofunction:: whenever.hours
 .. autofunction:: whenever.minutes
 

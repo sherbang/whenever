@@ -1,6 +1,6 @@
 import pickle
 import weakref
-from datetime import datetime as py_datetime, timedelta, timezone
+from datetime import datetime as py_datetime, timezone
 
 import pytest
 from hypothesis import given
@@ -8,11 +8,14 @@ from hypothesis.strategies import text
 
 from whenever import (
     Ambiguous,
+    Date,
     DoesntExistInZone,
+    Duration,
     InvalidFormat,
     LocalDateTime,
     NaiveDateTime,
     OffsetDateTime,
+    Period,
     UTCDateTime,
     ZonedDateTime,
     hours,
@@ -44,6 +47,11 @@ def test_minimal():
         == NaiveDateTime(2020, 8, 15, 12, 0, 0)
         == NaiveDateTime(2020, 8, 15, 12, 0, 0, 0)
     )
+
+
+def test_date():
+    d = NaiveDateTime(2020, 8, 15, 23, 12, 9, 987_654)
+    assert d.date() == Date(2020, 8, 15)
 
 
 def test_assume_utc():
@@ -228,7 +236,9 @@ def test_equality():
 
     # Ambiguity in system timezone
     with local_ams_tz():
-        assert NaiveDateTime(2023, 10, 29, 2, 15) == NaiveDateTime.from_py(
+        assert NaiveDateTime(
+            2023, 10, 29, 2, 15
+        ) == NaiveDateTime.from_py_datetime(
             py_datetime(2023, 10, 29, 2, 15, fold=1)
         )
 
@@ -271,17 +281,17 @@ def test_comparison():
 
 def test_py():
     d = NaiveDateTime(2020, 8, 15, 23, 12, 9, 987_654)
-    assert d.py() == py_datetime(2020, 8, 15, 23, 12, 9, 987_654)
+    assert d.py_datetime() == py_datetime(2020, 8, 15, 23, 12, 9, 987_654)
 
 
-def test_from_py():
+def test_from_py_datetime():
     d = py_datetime(2020, 8, 15, 23, 12, 9, 987_654)
-    assert NaiveDateTime.from_py(d) == NaiveDateTime(
+    assert NaiveDateTime.from_py_datetime(d) == NaiveDateTime(
         2020, 8, 15, 23, 12, 9, 987_654
     )
 
     with pytest.raises(ValueError, match="utc"):
-        NaiveDateTime.from_py(
+        NaiveDateTime.from_py_datetime(
             py_datetime(2020, 8, 15, 23, 12, 9, 987_654, tzinfo=timezone.utc)
         )
 
@@ -317,42 +327,55 @@ def test_replace():
         d.replace(tzinfo=timezone.utc)  # type: ignore[call-arg]
 
 
-def test_add():
-    d = NaiveDateTime(2020, 8, 15, 23, 12, 9, 987_654)
-    assert d + timedelta(days=1, seconds=5) == NaiveDateTime(
-        2020, 8, 16, 23, 12, 14, 987_654
-    )
+class TestAdd:
+
+    def test_duration(self):
+        d = NaiveDateTime(2020, 8, 15, 23, 12, 9, 987_654)
+        assert d + Duration(hours=24, seconds=5) == NaiveDateTime(
+            2020, 8, 16, 23, 12, 14, 987_654
+        )
+
+    def test_invalid(self):
+        d = NaiveDateTime(2020, 8, 15, 23, 12, 9, 987_654)
+        with pytest.raises(TypeError, match="unsupported operand type"):
+            d + 42  # type: ignore[operator]
+
+    def test_period(self):
+        d = NaiveDateTime(2020, 8, 15, 23, 12, 9, 987_654)
+        assert d + Period(years=1, weeks=1, days=-3, minutes=5) == d.replace(
+            year=2021, day=19, minute=17
+        )
 
 
-def test_add_invalid():
-    d = NaiveDateTime(2020, 8, 15, 23, 12, 9, 987_654)
-    with pytest.raises(TypeError, match="unsupported operand type"):
-        d + 42  # type: ignore[operator]
+class TestSub:
 
+    def test_duration(self):
+        d = NaiveDateTime(2020, 8, 15, 23, 12, 9, 987_654)
+        assert d - Duration(hours=24, seconds=5) == NaiveDateTime(
+            2020, 8, 14, 23, 12, 4, 987_654
+        )
 
-def test_sub():
-    d = NaiveDateTime(2020, 8, 15, 23, 12, 9, 987_654)
-    assert d - timedelta(days=1, seconds=5) == NaiveDateTime(
-        2020, 8, 14, 23, 12, 4, 987_654
-    )
+    def test_period(self):
+        d = NaiveDateTime(2020, 8, 15, 23, 12, 9, 987_654)
+        assert d - Period(years=1, weeks=1, days=-3, minutes=6) == d.replace(
+            year=2019, day=11, minute=6
+        )
 
+    def test_other_datetime(self):
+        d = NaiveDateTime(2020, 8, 15, 23, 12, 9, 987_654)
+        other = NaiveDateTime(2020, 8, 14, 23, 12, 4, 987_654)
+        assert d - other == Duration(hours=24, seconds=5)
 
-def test_subtract_datetime():
-    d = NaiveDateTime(2020, 8, 15, 23, 12, 9, 987_654)
-    other = NaiveDateTime(2020, 8, 14, 23, 12, 4, 987_654)
-    assert d - other == timedelta(days=1, seconds=5)
-
-
-def test_subtract_invalid():
-    d = NaiveDateTime(2020, 8, 15, 23, 12, 9, 987_654)
-    with pytest.raises(TypeError, match="unsupported operand type"):
-        d - 42  # type: ignore[operator]
+    def test_invalid(self):
+        d = NaiveDateTime(2020, 8, 15, 23, 12, 9, 987_654)
+        with pytest.raises(TypeError, match="unsupported operand type"):
+            d - 42  # type: ignore[operator]
 
 
 def test_pickle():
     d = NaiveDateTime(2020, 8, 15, 23, 12, 9, 987_654)
     dumped = pickle.dumps(d)
-    assert len(dumped) <= len(pickle.dumps(d.py)) + 15
+    assert len(dumped) <= len(pickle.dumps(d.py_datetime())) + 15
     assert pickle.loads(pickle.dumps(d)) == d
 
 

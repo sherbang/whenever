@@ -12,6 +12,7 @@ from pytest import approx
 from whenever import (
     Ambiguous,
     DoesntExistInZone,
+    Duration,
     InvalidFormat,
     LocalDateTime,
     NaiveDateTime,
@@ -543,28 +544,32 @@ def test_repr():
 @local_nyc_tz()
 def test_py():
     d = LocalDateTime(2020, 8, 15, 23, 12, 9, 987_654)
-    py = d.py()
+    py = d.py_datetime()
     assert py == py_datetime(2020, 8, 15, 23, 12, 9, 987_654).astimezone(None)
 
 
-class TestFromPy:
+class TestFromPyDateTime:
     @local_ams_tz()
     def test_basic(self):
-        d = py_datetime(2020, 8, 15, 23, tzinfo=timezone(hours(2)))
-        assert LocalDateTime.from_py(d).exact_eq(
+        d = py_datetime(
+            2020, 8, 15, 23, tzinfo=timezone(hours(2).py_timedelta())
+        )
+        assert LocalDateTime.from_py_datetime(d).exact_eq(
             LocalDateTime(2020, 8, 15, 23)
         )
 
     @local_ams_tz()
     def test_disambiguated(self):
-        d = py_datetime(2023, 10, 29, 2, 15, 30, tzinfo=timezone(hours(1)))
-        assert LocalDateTime.from_py(d).exact_eq(
+        d = py_datetime(
+            2023, 10, 29, 2, 15, 30, tzinfo=timezone(hours(1).py_timedelta())
+        )
+        assert LocalDateTime.from_py_datetime(d).exact_eq(
             LocalDateTime(2023, 10, 29, 2, 15, 30, disambiguate="later")
         )
 
     def test_wrong_tzinfo(self):
         with pytest.raises(ValueError, match="Paris"):
-            LocalDateTime.from_py(
+            LocalDateTime.from_py_datetime(
                 py_datetime(2020, 8, 15, 23, tzinfo=ZoneInfo("Europe/Paris"))
             )
 
@@ -573,7 +578,7 @@ class TestFromPy:
 def test_now():
     now = LocalDateTime.now()
     py_now = py_datetime.now(ZoneInfo("America/New_York")).replace(tzinfo=None)
-    assert py_now - now.py() < timedelta(seconds=1)
+    assert py_now - now.py_datetime() < timedelta(seconds=1)
 
 
 def test_weakref():
@@ -647,9 +652,9 @@ class TestReplace:
 
 class TestAdd:
     @local_ams_tz()
-    def test_zero_timedelta(self):
+    def test_zero(self):
         d = LocalDateTime(2020, 8, 15, 23, 12, 9, 987_654)
-        assert (d + timedelta()).exact_eq(d)
+        assert (d + Duration.ZERO).exact_eq(d)
 
     @local_ams_tz()
     def test_ambiguous(self):
@@ -685,9 +690,9 @@ class TestAdd:
 
 class TestSubtract:
     @local_ams_tz()
-    def test_zero_timedelta(self):
+    def test_zero(self):
         d = LocalDateTime(2020, 8, 15, 23, 12, 9, 987_654)
-        assert (d - timedelta()).exact_eq(d)
+        assert (d - Duration.ZERO).exact_eq(d)
 
     @local_ams_tz()
     def test_ambiguous(self):
@@ -718,7 +723,7 @@ class TestSubtract:
         d = LocalDateTime(2023, 10, 29, 5)
         other = LocalDateTime(2023, 10, 28, 3)
         assert d - other == hours(27)
-        assert other - d == timedelta(hours=-27)
+        assert other - d == Duration(hours=-27)
 
     @local_ams_tz()
     def test_subtract_amibiguous_datetime(self):
@@ -762,7 +767,7 @@ class TestSubtract:
 def test_pickle():
     d = LocalDateTime(2020, 8, 15, 23, 12, 9, 987_654)
     dumped = pickle.dumps(d)
-    assert len(dumped) <= len(pickle.dumps(d.py))
+    assert len(dumped) <= len(pickle.dumps(d.py_datetime()))
     assert pickle.loads(pickle.dumps(d)) == d
 
 
@@ -771,10 +776,9 @@ def test_old_pickle_data_remains_unpicklable():
     # Don't update this value -- the whole idea is that it's a pickle at
     # a specific version of the library.
     dumped = (
-        b"\x80\x04\x95_\x00\x00\x00\x00\x00\x00\x00\x8c\x08whenever\x94\x8c\x0c_unp"
-        b"kl_local\x94\x93\x94(M\xe4\x07K\x08K\x0fK\x17K\x0cK\tJ\x06\x12"
-        b"\x0f\x00\x8c\x08datetime\x94\x8c\ttimedelta\x94\x93\x94K\x00M \x1c"
-        b"K\x00\x87\x94R\x94\x8c\x04CEST\x94t\x94R\x94."
+        b"\x80\x04\x95D\x00\x00\x00\x00\x00\x00\x00\x8c\x08whenever\x94\x8c\x0c_unp"
+        b"kl_local\x94\x93\x94(M\xe4\x07K\x08K\x0fK\x17K\x0cK\tJ\x06\x12\x0f\x00G@"
+        b"\xbc \x00\x00\x00\x00\x00\x8c\x04CEST\x94t\x94R\x94."
     )
     assert pickle.loads(dumped) == LocalDateTime(
         2020, 8, 15, 23, 12, 9, 987_654
