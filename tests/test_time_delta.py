@@ -7,7 +7,6 @@ import pytest
 from pytest import approx
 
 from whenever import (
-    DateDelta,
     InvalidFormat,
     TimeDelta,
     hours,
@@ -29,12 +28,6 @@ class TestInit:
     def test_defaults(self):
         d = TimeDelta()
         assert d.in_microseconds() == 0
-
-
-def test_parts():
-    d = TimeDelta(hours=1, minutes=2, seconds=3, microseconds=4)
-    assert d._date_part == DateDelta.ZERO
-    assert d._time_part is d
 
 
 def test_factories():
