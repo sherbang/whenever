@@ -6,10 +6,10 @@ use std::ptr::null_mut;
 #[repr(C)]
 pub struct PyTimeDelta {
     _ob_base: PyObject,
-    delta: chrono::TimeDelta,
+    delta: (),
 }
 
-unsafe extern "C" fn timedelta_new(
+unsafe extern "C" fn new(
     subtype: *mut PyTypeObject,
     args: *mut PyObject,
     kwds: *mut PyObject,
@@ -28,24 +28,17 @@ unsafe extern "C" fn timedelta_new(
     if slf.is_null() {
         return ptr::null_mut();
     } else {
-        let delta = chrono::TimeDelta::zero();
+        let delta = ();
         let slf = slf.cast::<PyTimeDelta>();
         ptr::addr_of_mut!((*slf).delta).write(delta);
     }
     slf
 }
 
-unsafe extern "C" fn timedelta_repr(slf: *mut PyObject) -> *mut PyObject {
+unsafe extern "C" fn repr(slf: *mut PyObject) -> *mut PyObject {
     let slf = slf.cast::<PyTimeDelta>();
-    let delta = (*slf).delta;
-    let string = format!("TimeDelta({})", delta);
+    let string = format!("TimeDelta()");
     PyUnicode_FromStringAndSize(string.as_ptr().cast::<c_char>(), string.len() as Py_ssize_t)
-}
-
-unsafe extern "C" fn timedelta_int(slf: *mut PyObject) -> *mut PyObject {
-    let slf = slf.cast::<PyTimeDelta>();
-    let hours = (*slf).delta.num_hours();
-    PyLong_FromUnsignedLongLong(hours as c_ulonglong)
 }
 
 unsafe extern "C" fn timedelta_richcompare(
@@ -116,7 +109,7 @@ static mut GETSETTERS: &[PyGetSetDef] = &[
 static mut SLOTS: &[PyType_Slot] = &[
     PyType_Slot {
         slot: Py_tp_new,
-        pfunc: timedelta_new as *mut c_void,
+        pfunc: new as *mut c_void,
     },
     PyType_Slot {
         slot: Py_tp_doc,
@@ -124,11 +117,7 @@ static mut SLOTS: &[PyType_Slot] = &[
     },
     PyType_Slot {
         slot: Py_tp_repr,
-        pfunc: timedelta_repr as *mut c_void,
-    },
-    PyType_Slot {
-        slot: Py_nb_int,
-        pfunc: timedelta_int as *mut c_void,
+        pfunc: repr as *mut c_void,
     },
     PyType_Slot {
         slot: Py_tp_richcompare,

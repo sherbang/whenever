@@ -36,11 +36,3 @@ def test_generic():
         assert alias.__args__ == (int,)
     else:
         assert alias is Interval
-
-
-def test_raise_exception():
-    pass  # TODO
-
-
-def test_property():
-    pass  # TODO

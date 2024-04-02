@@ -15,3 +15,4 @@ from ._pywhenever import (  # noqa: F401; noqa: F401,F403
     _unpkl_utc,
     _unpkl_zoned,
 )
+from ._whenever import Date

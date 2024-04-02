@@ -2,6 +2,7 @@ use core::ffi::{c_char, c_int, c_void};
 use core::{mem, ptr};
 use pyo3_ffi::*;
 
+mod date;
 mod interval;
 mod timedelta;
 
@@ -83,6 +84,15 @@ unsafe extern "C" fn whenever_exec(module: *mut PyObject) -> c_int {
         return -1;
     }
     add!(module, "Interval\0", interval_type);
+    (*state).interval_type = interval_type.cast::<PyTypeObject>();
+
+    // Date
+    let date_type = PyType_FromSpec(ptr::addr_of_mut!(crate::date::SPEC));
+    if date_type.is_null() {
+        return -1;
+    }
+    add!(module, "Date\0", date_type);
+    (*state).date_type = date_type.cast::<PyTypeObject>();
 
     let ambiguoustime_type = PyErr_NewException(
         "whenever.AmbiguousTime\0".as_ptr().cast::<c_char>(),
@@ -93,7 +103,7 @@ unsafe extern "C" fn whenever_exec(module: *mut PyObject) -> c_int {
         return -1;
     }
     add!(module, "AmbiguousTime\0", ambiguoustime_type);
-    (*state).ambigoustime_type = ambiguoustime_type.cast::<PyTypeObject>();
+    (*state).ambiguoustime_type = ambiguoustime_type.cast::<PyTypeObject>();
 
     0
 }
@@ -111,11 +121,15 @@ unsafe extern "C" fn whenever_traverse(
     } else {
         (visit)(timedelta_type, arg)
     }
+
+    // TODO: traverse other types
 }
 
 unsafe extern "C" fn whenever_clear(module: *mut PyObject) -> c_int {
     let state: *mut WheneverState = PyModule_GetState(module.cast()).cast();
     Py_CLEAR(ptr::addr_of_mut!((*state).timedelta_type).cast());
+    Py_CLEAR(ptr::addr_of_mut!((*state).date_type).cast());
+    Py_CLEAR(ptr::addr_of_mut!((*state).ambiguoustime_type).cast());
     0
 }
 
@@ -125,8 +139,10 @@ unsafe extern "C" fn whenever_free(module: *mut c_void) {
 
 #[repr(C)]
 struct WheneverState {
+    date_type: *mut PyTypeObject,
+    interval_type: *mut PyTypeObject,
     timedelta_type: *mut PyTypeObject,
-    ambigoustime_type: *mut PyTypeObject,
+    ambiguoustime_type: *mut PyTypeObject,
 }
 
 #[allow(non_snake_case)]

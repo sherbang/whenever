@@ -1,3 +1,8 @@
+.PHONY: init
+init:
+	pip install -U pip setuptools-rust build twine
+	pip install -e .
+
 .PHONY: typecheck
 typecheck: 
 	mypy pysrc/ tests/
@@ -7,11 +12,17 @@ typecheck:
 format:
 	black pysrc/ tests/
 	isort pysrc/ tests/
+	cargo fmt
 
 .PHONY: docs
 docs:
 	@touch docs/api.rst
 	make -C docs/ html
+
+.PHONY: test
+test:
+	pytest tests/
+	cargo test
 
 .PHONY: check-dist
 check-dist:
@@ -24,6 +35,7 @@ ci-lint: check-dist
 	flake8 pysrc/ tests/
 	black --check pysrc/ tests/
 	isort --check pysrc/ tests/
+	cargo fmt -- --check
 	python -m slotscheck pysrc/
 
 .PHONY: clean
