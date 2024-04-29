@@ -11,6 +11,7 @@ mod date_delta;
 pub mod naive_datetime;
 mod time;
 mod time_delta;
+mod utc_datetime;
 mod zoned_datetime;
 
 static mut MODULE_DEF: PyModuleDef = PyModuleDef {
@@ -62,6 +63,14 @@ static mut METHODS: &[PyMethodDef] = &[
         ml_name: c_str!("_unpkl_naive"),
         ml_meth: PyMethodDefPointer {
             _PyCFunctionFast: naive_datetime::unpickle,
+        },
+        ml_flags: METH_FASTCALL,
+        ml_doc: NULL(),
+    },
+    PyMethodDef {
+        ml_name: c_str!("_unpk_utc"),
+        ml_meth: PyMethodDefPointer {
+            _PyCFunctionFast: utc_datetime::unpickle,
         },
         ml_flags: METH_FASTCALL,
         ml_doc: NULL(),
@@ -311,6 +320,16 @@ unsafe extern "C" fn module_exec(module: *mut PyObject) -> c_int {
         module,
         module_name,
         state,
+        utc_datetime,
+        "UTCDateTime",
+        utc_datetime_type,
+        "_unpk_utc",
+        unpickle_utc_datetime
+    );
+    add_type!(
+        module,
+        module_name,
+        state,
         zoned_datetime,
         "ZonedDateTime",
         zoned_datetime_type,
@@ -375,6 +394,10 @@ unsafe extern "C" fn module_traverse(
     if !naive_datetime_type.is_null() {
         (visit)(naive_datetime_type, arg);
     };
+    let utc_datetime_type: *mut PyObject = (*state).utc_datetime_type.cast();
+    if !utc_datetime_type.is_null() {
+        (visit)(utc_datetime_type, arg);
+    };
     let zoned_datetime_type: *mut PyObject = (*state).zoned_datetime_type.cast();
     if !zoned_datetime_type.is_null() {
         (visit)(zoned_datetime_type, arg);
@@ -395,14 +418,17 @@ unsafe extern "C" fn module_clear(module: *mut PyObject) -> c_int {
     Py_CLEAR(ptr::addr_of_mut!((*state).date_type).cast());
     Py_CLEAR(ptr::addr_of_mut!((*state).time_type).cast());
     Py_CLEAR(ptr::addr_of_mut!((*state).date_delta_type).cast());
+    Py_CLEAR(ptr::addr_of_mut!((*state).naive_datetime_type).cast());
+    Py_CLEAR(ptr::addr_of_mut!((*state).utc_datetime_type).cast());
     Py_CLEAR(ptr::addr_of_mut!((*state).zoned_datetime_type).cast());
 
     // unpickling functions
     Py_CLEAR(ptr::addr_of_mut!((*state).unpickle_date).cast());
     Py_CLEAR(ptr::addr_of_mut!((*state).unpickle_time).cast());
     Py_CLEAR(ptr::addr_of_mut!((*state).unpickle_date_delta).cast());
-    Py_CLEAR(ptr::addr_of_mut!((*state).unpickle_zoned_datetime).cast());
     Py_CLEAR(ptr::addr_of_mut!((*state).unpickle_naive_datetime).cast());
+    Py_CLEAR(ptr::addr_of_mut!((*state).unpickle_utc_datetime).cast());
+    Py_CLEAR(ptr::addr_of_mut!((*state).unpickle_zoned_datetime).cast());
 
     // imported modules
     Py_CLEAR(ptr::addr_of_mut!((*state).zoneinfo_type).cast());
@@ -422,6 +448,7 @@ struct ModuleState {
     date_delta_type: *mut PyTypeObject,
     time_delta_type: *mut PyTypeObject,
     naive_datetime_type: *mut PyTypeObject,
+    utc_datetime_type: *mut PyTypeObject,
     zoned_datetime_type: *mut PyTypeObject,
 
     // unpickling functions
@@ -430,6 +457,7 @@ struct ModuleState {
     unpickle_date_delta: *mut PyObject,
     unpickle_time_delta: *mut PyObject,
     unpickle_naive_datetime: *mut PyObject,
+    unpickle_utc_datetime: *mut PyObject,
     unpickle_zoned_datetime: *mut PyObject,
 
     // imported modules

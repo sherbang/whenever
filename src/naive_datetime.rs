@@ -12,8 +12,8 @@ use crate::ModuleState;
 #[repr(C)]
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
 pub(crate) struct DateTime {
-    date: date::Date,
-    time: time::Time,
+    pub date: date::Date,
+    pub time: time::Time,
 }
 
 #[repr(C)]
